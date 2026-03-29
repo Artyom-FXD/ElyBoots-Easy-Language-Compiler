@@ -83,8 +83,8 @@ class ProjectBuilder:
 
         return None, None
 
-    def _type_to_c(self, easy_type: str) -> str:
-        """Преобразует тип Easy в тип C."""
+    def _type_to_c(self, ely_type: str) -> str:
+        """Преобразует тип ely в тип C."""
         mapping = {
             'void': 'void', 'int': 'int', 'uint': 'unsigned int',
             'more': 'long long', 'umore': 'unsigned long long',
@@ -92,7 +92,7 @@ class ProjectBuilder:
             'str': 'char*', 'any': 'void*', 'char': 'char',
             'byte': 'signed char', 'ubyte': 'unsigned char'
         }
-        return mapping.get(easy_type, 'int')
+        return mapping.get(ely_type, 'int')
 
     def _compile_module(self, module_name: str, module_path: Path) -> bool:
         """Собирает модуль в динамическую библиотеку (dll/so)."""
@@ -145,9 +145,9 @@ class ProjectBuilder:
         header_file = self.build_dir / f'{module_name}.h'
         with open(header_file, 'w', encoding='utf-8') as hf:
             hf.write(f"// Auto-generated header for module {module_name}\n")
-            hf.write(f"#ifndef EASY_MODULE_{module_name.upper()}_H\n")
-            hf.write(f"#define EASY_MODULE_{module_name.upper()}_H\n\n")
-            hf.write('#include "easy_runtime.h"\n\n')
+            hf.write(f"#ifndef ely_MODULE_{module_name.upper()}_H\n")
+            hf.write(f"#define ely_MODULE_{module_name.upper()}_H\n\n")
+            hf.write('#include "ely_runtime.h"\n\n')
             for func in public_functions:
                 ret = func.return_type or 'void'
                 params = ', '.join([f"{self._type_to_c(p.type)} {p.name}" for p in func.parameters])
@@ -285,7 +285,7 @@ class ProjectBuilder:
             return False
 
         # Компилируем runtime.c из скопированной папки
-        runtime_c = self.build_runtime / 'easy_runtime.c'
+        runtime_c = self.build_runtime / 'ely_runtime.c'
         runtime_obj = None
         if runtime_c.exists():
             runtime_obj = self.build_dir / 'runtime.o'

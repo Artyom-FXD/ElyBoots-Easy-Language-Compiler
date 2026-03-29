@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 
 def main():
-    parser = argparse.ArgumentParser(prog='ebt', description='Easy Language Compiler')
+    parser = argparse.ArgumentParser(prog='ebt', description='ely Language Compiler')
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
     # build
@@ -124,7 +124,7 @@ def project_command(args):
     (project_dir / 'manager.json').write_text(json.dumps(manager, indent=4), encoding='utf-8')
     # main.e
     (project_dir / 'main.e').write_text("""public int func main() {
-    println("Hello from Easy!");
+    println("Hello from ely!");
     return 0;
 }
 """, encoding='utf-8')

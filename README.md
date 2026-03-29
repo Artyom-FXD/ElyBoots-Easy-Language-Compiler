@@ -1,6 +1,6 @@
-# Easy Language
+# ely Language
 
-**Easy Language** — a statically typed, compiled programming language with fast compilation, built-in collections, generics, and convenient syntax.
+**ely Language** — a statically typed, compiled programming language with fast compilation, built-in collections, generics, and convenient syntax.
 
 - Lightning-fast compilation (TCC)
 - Safe static typing
@@ -29,7 +29,7 @@
    - [Dynamic Libraries](#dynamic-libraries)
    - [Array Methods](#array-methods)
 4. [DictServer Module (JSON)](#dictserver-module-json)
-5. [Modules and the EasyBoots Compiler](#modules-and-the-easyboots-compiler)
+5. [Modules and the elyBoots Compiler](#modules-and-the-elyboots-compiler)
 6. [License](#license)
 
 ---
@@ -250,7 +250,7 @@ Import with `using DictServer;`. The `DictHost` type is an opaque pointer to a d
 
 ---
 
-## Modules and the EasyBoots Compiler
+## Modules and the elyBoots Compiler
 
 ### Project Structure
 

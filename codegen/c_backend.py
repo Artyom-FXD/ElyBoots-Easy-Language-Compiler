@@ -136,8 +136,8 @@ class CCodeGen:
             return 'any'
         return 'any'
 
-    def _type_to_c(self, easy_type: str) -> str:
-        easy_type = self._resolve_type_alias(easy_type)
+    def _type_to_c(self, ely_type: str) -> str:
+        ely_type = self._resolve_type_alias(ely_type)
         mapping = {
             'void': 'void',
             'bool': 'int',
@@ -153,27 +153,27 @@ class CCodeGen:
             'any': 'void*',
             'char': 'char',
         }
-        if easy_type.startswith('arr<'):
-            return 'easy_array*'
-        if easy_type.startswith('dict<'):
-            return 'easy_dict*'
-        if easy_type in mapping:
-            return mapping[easy_type]
-        if easy_type in self.structs:
-            return f"struct {easy_type}"
+        if ely_type.startswith('arr<'):
+            return 'ely_array*'
+        if ely_type.startswith('dict<'):
+            return 'ely_dict*'
+        if ely_type in mapping:
+            return mapping[ely_type]
+        if ely_type in self.structs:
+            return f"struct {ely_type}"
         # указатели
-        if easy_type.endswith('*'):
-            inner = easy_type[:-1].strip()
+        if ely_type.endswith('*'):
+            inner = ely_type[:-1].strip()
             return f"{self._type_to_c(inner)}*"
-        return easy_type
+        return ely_type
 
-    def _type_to_tag(self, easy_type: str) -> int:
+    def _type_to_tag(self, ely_type: str) -> int:
         tags = {
             'int': 1, 'uint': 2, 'more': 3, 'umore': 4,
             'flt': 5, 'double': 6, 'bool': 7, 'str': 8,
             'byte': 9, 'ubyte': 10
         }
-        return tags.get(easy_type, 1)
+        return tags.get(ely_type, 1)
 
     # ------------------- Генерация кода -------------------
     def emit(self, line: str):
@@ -213,7 +213,7 @@ class CCodeGen:
                 self.used_modules.append(stmt.module)
 
         # Заголовки
-        self.code.append('#include "easy_runtime.h"\n')
+        self.code.append('#include "ely_runtime.h"\n')
         for mod in self.used_modules:
             self.code.append(f'#include "{mod}.h"\n')
         self.code.append('\n')
@@ -463,9 +463,9 @@ class CCodeGen:
             c_elem_type = self._type_to_c(elem_type)
             counter_var = f"__i_{self.temp_counter}"
             self.temp_counter += 1
-            self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < easy_array_size({iterable_code}); {counter_var}++) {{")
+            self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < ely_array_size({iterable_code}); {counter_var}++) {{")
             self.indent += 1
-            elem_code = f"*({c_elem_type}*)easy_array_get({iterable_code}, {counter_var})"
+            elem_code = f"*({c_elem_type}*)ely_array_get({iterable_code}, {counter_var})"
             if isinstance(node.item_decl, VariableDeclaration):
                 decl_type = node.item_decl.type or elem_type
                 c_decl_type = self._type_to_c(decl_type)
@@ -494,13 +494,13 @@ class CCodeGen:
             c_val_type = self._type_to_c(val_type)
             keys_var = f"__keys_{self.temp_counter}"
             self.temp_counter += 1
-            self.emit_to_main(f"easy_array* {keys_var} = dictserver_keys({iterable_code});")
+            self.emit_to_main(f"ely_array* {keys_var} = dictserver_keys({iterable_code});")
             counter_var = f"__i_{self.temp_counter}"
             self.temp_counter += 1
-            self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < easy_array_size({keys_var}); {counter_var}++) {{")
+            self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < ely_array_size({keys_var}); {counter_var}++) {{")
             self.indent += 1
-            self.emit_to_main(f"char* __key = *(char**)easy_array_get({keys_var}, {counter_var});")
-            self.emit_to_main(f"{c_val_type} __value = *({c_val_type}*)easy_dict_get({iterable_code}, __key);")
+            self.emit_to_main(f"char* __key = *(char**)ely_array_get({keys_var}, {counter_var});")
+            self.emit_to_main(f"{c_val_type} __value = *({c_val_type}*)ely_dict_get({iterable_code}, __key);")
             if isinstance(node.item_decl, VariableDeclaration):
                 decl_type = node.item_decl.type or val_type
                 c_decl_type = self._type_to_c(decl_type)
@@ -513,7 +513,7 @@ class CCodeGen:
                 self.gen_statement(stmt)
             self.indent -= 1
             self.emit_to_main("}")
-            self.emit_to_main(f"easy_array_free({keys_var});")
+            self.emit_to_main(f"ely_array_free({keys_var});")
         else:
             self.error(f"foreach not supported for type {iterable_type}", node.iterable)
 
@@ -558,7 +558,7 @@ class CCodeGen:
             self.emit_to_main(f"{self._type_to_c(exc_type)}* __exc = ({self._type_to_c(exc_type)}*)__error_value;")
             if param:
                 self.emit_to_main(f"{self._type_to_c(exc_type)} {param} = *__exc;")
-                self.emit_to_main(f"easy_free(__exc);")
+                self.emit_to_main(f"ely_free(__exc);")
                 self.var_types[param] = exc_type
             for stmt in node.except_handler.body:
                 self.gen_statement(stmt)
@@ -570,7 +570,7 @@ class CCodeGen:
         val_code = self.gen_expression(val_expr)
         val_type = self._get_expression_type(val_expr)
         c_val_type = self._type_to_c(val_type)
-        self.emit_to_main(f"{c_val_type}* __exc_ptr = ({c_val_type}*)easy_alloc(sizeof({c_val_type}));")
+        self.emit_to_main(f"{c_val_type}* __exc_ptr = ({c_val_type}*)ely_alloc(sizeof({c_val_type}));")
         self.emit_to_main(f"*__exc_ptr = {val_code};")
         self.emit_to_main("__error_flag = 1;")
         self.emit_to_main("__error_value = __exc_ptr;")
@@ -676,9 +676,9 @@ class CCodeGen:
                     tmp_var = f"__tmp_{self.temp_counter}"
                     self.temp_counter += 1
                     self.emit_to_main(f"{c_val_type} {tmp_var} = {value};")
-                    return f"easy_dict_set({obj}, \"{node.target.member}\", &{tmp_var})"
+                    return f"ely_dict_set({obj}, \"{node.target.member}\", &{tmp_var})"
                 else:
-                    return f"easy_dict_set({obj}, \"{node.target.member}\", &{value})"
+                    return f"ely_dict_set({obj}, \"{node.target.member}\", &{value})"
         if isinstance(node.target, IndexExpression):
             target = self.gen_expression(node.target.target)
             index = self.gen_expression(node.target.index)
@@ -691,9 +691,9 @@ class CCodeGen:
                     tmp_var = f"__tmp_{self.temp_counter}"
                     self.temp_counter += 1
                     self.emit_to_main(f"{c_val_type} {tmp_var} = {value};")
-                    return f"easy_array_set({target}, {index}, &{tmp_var})"
+                    return f"ely_array_set({target}, {index}, &{tmp_var})"
                 else:
-                    return f"easy_array_set({target}, {index}, &{value})"
+                    return f"ely_array_set({target}, {index}, &{value})"
             elif target_type.startswith('dict<'):
                 if not self._is_lvalue(node.value):
                     val_type = self._get_expression_type(node.value)
@@ -701,9 +701,9 @@ class CCodeGen:
                     tmp_var = f"__tmp_{self.temp_counter}"
                     self.temp_counter += 1
                     self.emit_to_main(f"{c_val_type} {tmp_var} = {value};")
-                    return f"easy_dict_set({target}, {index}, &{tmp_var})"
+                    return f"ely_dict_set({target}, {index}, &{tmp_var})"
                 else:
-                    return f"easy_dict_set({target}, {index}, &{value})"
+                    return f"ely_dict_set({target}, {index}, &{value})"
         target_code = self.gen_expression(node.target)
         value_code = self.gen_expression(node.value)
         return f"{target_code} = {value_code}"
@@ -715,32 +715,32 @@ class CCodeGen:
         return f"({cond} ? {then_expr} : {else_expr})"
 
     def _gen_fstring(self, node: FString) -> str:
-        result = 'easy_str_dup("")'
+        result = 'ely_str_dup("")'
         for part in node.parts:
             if isinstance(part, str):
                 escaped = part.replace('"', '\\"')
-                result = f'easy_str_concat({result}, "{escaped}")'
+                result = f'ely_str_concat({result}, "{escaped}")'
             else:
                 expr_code = self.gen_expression(part)
                 expr_type = self._get_expression_type(part)
                 if expr_type.startswith('dict<'):
-                    to_str = f"easy_dict_to_json({expr_code})"
+                    to_str = f"ely_dict_to_json({expr_code})"
                 elif expr_type.startswith('arr<'):
-                    to_str = f"easy_array_to_json({expr_code})"
+                    to_str = f"ely_array_to_json({expr_code})"
                 elif expr_type in ('int','uint','more','umore','byte','ubyte'):
-                    to_str = f"easy_int_to_str({expr_code})"
+                    to_str = f"ely_int_to_str({expr_code})"
                 elif expr_type in ('flt','double'):
-                    to_str = f"easy_double_to_str({expr_code})"
+                    to_str = f"ely_double_to_str({expr_code})"
                 elif expr_type == 'bool':
-                    to_str = f"easy_bool_to_str({expr_code})"
+                    to_str = f"ely_bool_to_str({expr_code})"
                 else:
-                    to_str = f"easy_str_dup({expr_code})"
-                result = f'easy_str_concat({result}, {to_str})'
+                    to_str = f"ely_str_dup({expr_code})"
+                result = f'ely_str_concat({result}, {to_str})'
         return result
 
     def _gen_array_literal(self, node: ArrayLiteral) -> str:
         if not node.elements:
-            return "easy_array_new(0, sizeof(void*))"
+            return "ely_array_new(0, sizeof(void*))"
         elem_type = self._get_expression_type(node.elements[0])
         c_elem_type = self._type_to_c(elem_type)
         args = []
@@ -754,11 +754,11 @@ class CCodeGen:
             else:
                 args.append(f"&{elem_code}")
         args_str = ", ".join(args)
-        return f"easy_array_make({len(node.elements)}, sizeof({c_elem_type}), {args_str})"
+        return f"ely_array_make({len(node.elements)}, sizeof({c_elem_type}), {args_str})"
 
     def _gen_dict_literal(self, node: DictLiteral) -> str:
         if not node.pairs:
-            return "easy_dict_new(0, sizeof(void*))"
+            return "ely_dict_new(0, sizeof(void*))"
         value_type = self._get_expression_type(node.pairs[0].value)
         c_value_type = self._type_to_c(value_type)
         args = []
@@ -774,7 +774,7 @@ class CCodeGen:
             else:
                 args.append(f"&{val_code}")
         args_str = ", ".join(args)
-        return f"easy_dict_make({len(node.pairs)}, sizeof(char*), sizeof({c_value_type}), {args_str})"
+        return f"ely_dict_make({len(node.pairs)}, sizeof(char*), sizeof({c_value_type}), {args_str})"
 
     def _gen_index_expression(self, node: IndexExpression) -> str:
         target = self.gen_expression(node.target)
@@ -783,7 +783,7 @@ class CCodeGen:
         if target_type.startswith('arr<'):
             inner = target_type[4:-1].strip()
             c_inner = self._type_to_c(inner)
-            return f"*({c_inner}*)easy_array_get({target}, {index})"
+            return f"*({c_inner}*)ely_array_get({target}, {index})"
         elif target_type.startswith('dict<'):
             inner = target_type[5:-1].strip()
             depth = 0
@@ -797,7 +797,7 @@ class CCodeGen:
             else:
                 val_type = inner[comma_pos+1:].strip()
             c_val = self._type_to_c(val_type)
-            return f"*({c_val}*)easy_dict_get({target}, {index})"
+            return f"*({c_val}*)ely_dict_get({target}, {index})"
         else:
             self.error(f"Indexing not supported for type {target_type}", node)
             return "NULL"
@@ -818,7 +818,7 @@ class CCodeGen:
             else:
                 val_type = inner[comma_pos+1:].strip()
             c_val = self._type_to_c(val_type)
-            return f"*({c_val}*)easy_dict_get({obj}, \"{node.member}\")"
+            return f"*({c_val}*)ely_dict_get({obj}, \"{node.member}\")"
         else:
             return f"{obj}.{node.member}"
 
@@ -844,9 +844,9 @@ class CCodeGen:
                         tmp_var = f"__tmp_{self.temp_counter}"
                         self.temp_counter += 1
                         self.emit_to_main(f"{c_val_type} {tmp_var} = {arg_code};")
-                        return f"easy_array_push({obj_code}, &{tmp_var})"
+                        return f"ely_array_push({obj_code}, &{tmp_var})"
                     else:
-                        return f"easy_array_push({obj_code}, &{arg_code})"
+                        return f"ely_array_push({obj_code}, &{arg_code})"
                 elif method == 'remove':
                     if len(node.arguments) != 1:
                         self.error("remove expects one argument (value)", node)
@@ -859,9 +859,9 @@ class CCodeGen:
                         tmp_var = f"__tmp_{self.temp_counter}"
                         self.temp_counter += 1
                         self.emit_to_main(f"{c_val_type} {tmp_var} = {arg_code};")
-                        return f"easy_array_remove_value({obj_code}, &{tmp_var})"
+                        return f"ely_array_remove_value({obj_code}, &{tmp_var})"
                     else:
-                        return f"easy_array_remove_value({obj_code}, &{arg_code})"
+                        return f"ely_array_remove_value({obj_code}, &{arg_code})"
                 elif method == 'insert':
                     if len(node.arguments) != 2:
                         self.error("insert expects two arguments (index, value)", node)
@@ -876,9 +876,9 @@ class CCodeGen:
                         tmp_var = f"__tmp_{self.temp_counter}"
                         self.temp_counter += 1
                         self.emit_to_main(f"{c_val_type} {tmp_var} = {value_code};")
-                        return f"easy_array_insert({obj_code}, {index_code}, &{tmp_var})"
+                        return f"ely_array_insert({obj_code}, {index_code}, &{tmp_var})"
                     else:
-                        return f"easy_array_insert({obj_code}, {index_code}, &{value_code})"
+                        return f"ely_array_insert({obj_code}, {index_code}, &{value_code})"
                 elif method == 'index':
                     if len(node.arguments) != 1:
                         self.error("index expects one argument (value)", node)
@@ -891,25 +891,25 @@ class CCodeGen:
                         tmp_var = f"__tmp_{self.temp_counter}"
                         self.temp_counter += 1
                         self.emit_to_main(f"{c_val_type} {tmp_var} = {arg_code};")
-                        return f"easy_array_index({obj_code}, &{tmp_var})"
+                        return f"ely_array_index({obj_code}, &{tmp_var})"
                     else:
-                        return f"easy_array_index({obj_code}, &{arg_code})"
+                        return f"ely_array_index({obj_code}, &{arg_code})"
                 elif method == 'pop':
                     if len(node.arguments) == 0:
-                        return f"*({c_inner}*)easy_array_pop_value({obj_code})"
+                        return f"*({c_inner}*)ely_array_pop_value({obj_code})"
                     elif len(node.arguments) == 1:
                         index_expr = node.arguments[0]
                         index_code = self.gen_expression(index_expr)
                         tmp_var = f"__tmp_{self.temp_counter}"
                         self.temp_counter += 1
-                        self.emit_to_main(f"{c_inner} {tmp_var} = *({c_inner}*)easy_array_get({obj_code}, {index_code});")
-                        self.emit_to_main(f"easy_array_remove_index({obj_code}, {index_code});")
+                        self.emit_to_main(f"{c_inner} {tmp_var} = *({c_inner}*)ely_array_get({obj_code}, {index_code});")
+                        self.emit_to_main(f"ely_array_remove_index({obj_code}, {index_code});")
                         return tmp_var
                     else:
                         self.error("pop expects 0 or 1 argument", node)
                         return ""
                 elif method == 'len':
-                    return f"easy_int_to_str((int)easy_array_len({obj_code}))"
+                    return f"ely_int_to_str((int)ely_array_len({obj_code}))"
             # можно добавить методы словарей
         # Обычные вызовы функций (Identifier)
         if not isinstance(node.callee, Identifier):
@@ -941,100 +941,100 @@ class CCodeGen:
         # print и println
         if func_name == 'print':
             if not node.arguments:
-                return 'easy_print("")'
+                return 'ely_print("")'
             arg = node.arguments[0]
             arg_type = self._get_expression_type(arg)
             arg_code = self.gen_expression(arg)
             if arg_type.startswith('dict<'):
-                return f"easy_print(easy_dict_to_json({arg_code}))"
+                return f"ely_print(ely_dict_to_json({arg_code}))"
             if arg_type.startswith('arr<'):
-                return f"easy_print(easy_array_to_json({arg_code}))"
+                return f"ely_print(ely_array_to_json({arg_code}))"
             if arg_type in ('int','uint','more','umore','byte','ubyte'):
-                return f"easy_print_int({arg_code})"
+                return f"ely_print_int({arg_code})"
             if arg_type in ('flt','double'):
-                return f"easy_print_double({arg_code})"
+                return f"ely_print_double({arg_code})"
             if arg_type == 'bool':
-                return f"easy_print_bool({arg_code})"
-            return f"easy_print({arg_code})"
+                return f"ely_print_bool({arg_code})"
+            return f"ely_print({arg_code})"
 
         if func_name == 'println':
             if not node.arguments:
-                return 'easy_println("")'
+                return 'ely_println("")'
             arg = node.arguments[0]
             arg_type = self._get_expression_type(arg)
             arg_code = self.gen_expression(arg)
             if arg_type.startswith('dict<'):
-                return f"easy_println(easy_dict_to_json({arg_code}))"
+                return f"ely_println(ely_dict_to_json({arg_code}))"
             if arg_type.startswith('arr<'):
-                return f"easy_println(easy_array_to_json({arg_code}))"
+                return f"ely_println(ely_array_to_json({arg_code}))"
             if arg_type == 'str':
-                return f"easy_println({arg_code})"
+                return f"ely_println({arg_code})"
             if arg_type in ('int','uint','more','umore','byte','ubyte'):
-                to_str = f"easy_int_to_str({arg_code})"
+                to_str = f"ely_int_to_str({arg_code})"
             elif arg_type in ('flt','double'):
-                to_str = f"easy_double_to_str({arg_code})"
+                to_str = f"ely_double_to_str({arg_code})"
             elif arg_type == 'bool':
-                to_str = f"easy_bool_to_str({arg_code})"
+                to_str = f"ely_bool_to_str({arg_code})"
             else:
-                to_str = f"easy_str_dup({arg_code})"
-            return f"easy_println({to_str})"
+                to_str = f"ely_str_dup({arg_code})"
+            return f"ely_println({to_str})"
 
         # JSON
         if func_name == 'jsonify':
             if not node.arguments:
-                return 'easy_str_dup("")'
+                return 'ely_str_dup("")'
             arg_code = self.gen_expression(node.arguments[0])
-            return f"easy_jsonify({arg_code})"
+            return f"ely_jsonify({arg_code})"
         if func_name == 'dictify':
             if not node.arguments:
-                return "easy_dict_new(0, sizeof(void*))"
+                return "ely_dict_new(0, sizeof(void*))"
             arg_code = self.gen_expression(node.arguments[0])
-            return f"easy_dictify({arg_code})"
+            return f"ely_dictify({arg_code})"
 
         # Стандартные функции
         stdlib = {
-            'len': 'easy_str_len',
-            'concat': 'easy_str_concat',
-            'dup': 'easy_str_dup',
-            'cmp': 'easy_str_cmp',
-            'substr': 'easy_str_substr',
-            'trim': 'easy_str_trim',
-            'replace': 'easy_str_replace',
-            'abs': 'easy_abs_int',
-            'abs_more': 'easy_abs_more',
-            'fabs': 'easy_fabs',
-            'min': 'easy_min_int',
-            'max': 'easy_max_int',
-            'pow': 'easy_pow',
-            'sqrt': 'easy_sqrt',
-            'sin': 'easy_sin',
-            'cos': 'easy_cos',
-            'tan': 'easy_tan',
-            'rand': 'easy_rand',
-            'srand': 'easy_srand',
-            'rand_double': 'easy_rand_double',
-            'sleep': 'easy_sleep',
-            'time_now': 'easy_time_now',
-            'time_diff': 'easy_time_diff',
-            'file_open': 'easy_file_open',
-            'file_close': 'easy_file_close',
-            'file_write': 'easy_file_write',
-            'file_read': 'easy_file_read',
-            'file_exists': 'easy_file_exists',
-            'file_read_all': 'easy_file_read_all',
-            'file_remove': 'easy_file_remove',
-            'file_rename': 'easy_file_rename',
-            'path_join': 'easy_path_join',
-            'path_basename': 'easy_path_basename',
-            'path_dirname': 'easy_path_dirname',
-            'path_is_absolute': 'easy_path_is_absolute',
-            'load_library': 'easy_load_library',
-            'get_function': 'easy_get_function',
-            'close_library': 'easy_close_library',
-            'call_int_int': 'easy_call_int_int',
-            'call_double_double': 'easy_call_double_double',
-            'call_double_double_double': 'easy_call_double_double_double',
-            'call_str_void': 'easy_call_str_void',
+            'len': 'ely_str_len',
+            'concat': 'ely_str_concat',
+            'dup': 'ely_str_dup',
+            'cmp': 'ely_str_cmp',
+            'substr': 'ely_str_substr',
+            'trim': 'ely_str_trim',
+            'replace': 'ely_str_replace',
+            'abs': 'ely_abs_int',
+            'abs_more': 'ely_abs_more',
+            'fabs': 'ely_fabs',
+            'min': 'ely_min_int',
+            'max': 'ely_max_int',
+            'pow': 'ely_pow',
+            'sqrt': 'ely_sqrt',
+            'sin': 'ely_sin',
+            'cos': 'ely_cos',
+            'tan': 'ely_tan',
+            'rand': 'ely_rand',
+            'srand': 'ely_srand',
+            'rand_double': 'ely_rand_double',
+            'sleep': 'ely_sleep',
+            'time_now': 'ely_time_now',
+            'time_diff': 'ely_time_diff',
+            'file_open': 'ely_file_open',
+            'file_close': 'ely_file_close',
+            'file_write': 'ely_file_write',
+            'file_read': 'ely_file_read',
+            'file_exists': 'ely_file_exists',
+            'file_read_all': 'ely_file_read_all',
+            'file_remove': 'ely_file_remove',
+            'file_rename': 'ely_file_rename',
+            'path_join': 'ely_path_join',
+            'path_basename': 'ely_path_basename',
+            'path_dirname': 'ely_path_dirname',
+            'path_is_absolute': 'ely_path_is_absolute',
+            'load_library': 'ely_load_library',
+            'get_function': 'ely_get_function',
+            'close_library': 'ely_close_library',
+            'call_int_int': 'ely_call_int_int',
+            'call_double_double': 'ely_call_double_double',
+            'call_double_double_double': 'ely_call_double_double_double',
+            'call_str_void': 'ely_call_str_void',
         }
         if func_name in stdlib:
             c_func = stdlib[func_name]

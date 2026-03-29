@@ -15,7 +15,7 @@ furnished to do so, subject to the following conditions:
 
 2. Additional permission for the standard library:
    For the files that constitute the standard library (including but not
-   limited to easy_runtime.c, easy_runtime.h, and any other files explicitly
+   limited to ely_runtime.c, ely_runtime.h, and any other files explicitly
    marked as part of the standard library), the requirements of paragraph 1
    do not apply to programs that are compiled using this Software, nor to the
    output of such compilation. You may use, compile, link, and distribute

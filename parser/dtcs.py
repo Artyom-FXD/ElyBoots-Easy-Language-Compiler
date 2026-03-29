@@ -72,11 +72,9 @@ class VariableDeclaration(Statement):
     tag: Optional[TagAnnotation] = None   # если перед объявлением стоит тег (например, @opMem)
 
 @dataclass
-class ClassDeclaration(Statement):
+class Parameter:
+    type: str
     name: str
-    extends: Optional[str]
-    methods: List[MethodDeclaration]
-    type_params: List[str] = field(default_factory=list)   # добавлено
 
 @dataclass
 class MethodDeclaration(Statement):
@@ -89,9 +87,11 @@ class MethodDeclaration(Statement):
     type_params: List[str] = field(default_factory=list)   # добавлено
 
 @dataclass
-class Parameter:
-    type: str
+class ClassDeclaration(Statement):
     name: str
+    extends: Optional[str]
+    methods: List[MethodDeclaration]
+    type_params: List[str] = field(default_factory=list)   # добавлено
 
 @dataclass
 class IfStatement(Statement):

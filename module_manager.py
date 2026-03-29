@@ -82,9 +82,9 @@ class ModuleManager:
         h_file = build_dir / f'{module_name}.h'
         with open(h_file, 'w', encoding='utf-8') as f:
             f.write(f"// Auto-generated header for module {module_name}\n")
-            f.write("#ifndef EASY_MODULE_{0}_H\n".format(module_name.upper()))
-            f.write("#define EASY_MODULE_{0}_H\n\n".format(module_name.upper()))
-            f.write('#include "easy_runtime.h"\n\n')
+            f.write("#ifndef ely_MODULE_{0}_H\n".format(module_name.upper()))
+            f.write("#define ely_MODULE_{0}_H\n\n".format(module_name.upper()))
+            f.write('#include "ely_runtime.h"\n\n')
             for func in public_functions:
                 ret = func[1]
                 name = func[0]
@@ -124,7 +124,7 @@ class ModuleManager:
             print(f"Compilation failed: {e.stderr}")
             return False
 
-    def _c_type(self, easy_type):
+    def _c_type(self, ely_type):
         mapping = {
             'void': 'void', 'int': 'int', 'uint': 'unsigned int',
             'more': 'long long', 'umore': 'unsigned long long',
@@ -132,7 +132,7 @@ class ModuleManager:
             'str': 'char*', 'any': 'void*', 'char': 'char',
             'byte': 'signed char', 'ubyte': 'unsigned char'
         }
-        return mapping.get(easy_type, 'int')
+        return mapping.get(ely_type, 'int')
 
     def _find_compiler(self):
         for comp in ['clang', 'gcc']:
