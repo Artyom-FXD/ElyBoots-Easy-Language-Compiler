@@ -5,7 +5,7 @@
 
 struct DictServer {
     char* path;           // путь к файлу (для сохранения)
-    dict* root;      // корневой объект
+    dict* root;           // корневой объект (словарь из ely_value*)
 };
 
 static char* next_segment(char* path, char** next) {
@@ -25,17 +25,16 @@ static char* next_segment(char* path, char** next) {
 }
 
 // Получение узла по пути (создание, если create=1)
-static void* get_node(DictServer* ds, char* path, int create, int* is_array) {
-    if (!path || !*path) return ds->root;
+static ely_value* get_node(DictServer* ds, char* path, int create, int* is_array) {
+    if (!path || !*path) return ely_value_new_object(ds->root);
     char* cur = path;
-    void* current = ds->root;
-    void* parent = NULL;
+    ely_value* current = ely_value_new_object(ds->root);
+    ely_value* parent = NULL;
     char* last_seg = NULL;
     int last_is_array = 0;
 
     while (cur) {
         char* seg = next_segment(cur, &cur);
-        // Если сегмент – число, то работаем с массивом
         int index = -1;
         char* endptr;
         long idx = strtol(seg, &endptr, 10);
@@ -45,47 +44,44 @@ static void* get_node(DictServer* ds, char* path, int create, int* is_array) {
             if (!current) {
                 if (!create) { ely_free(seg); return NULL; }
                 // создать массив
-                current = arr_new(sizeof(void*));
+                arr* a = arr_new();
+                current = ely_value_new_array(a);
                 if (parent) {
                     if (last_is_array) {
                         // parent – массив, last_seg – индекс
-                        arr_set(parent, (size_t)index, &current);
+                        arr_set(parent->u.array_val, (size_t)index, current);
                     } else {
                         // parent – словарь, last_seg – ключ
-                        dict_set_str(parent, last_seg, &current);
+                        dict_set_str(parent->u.object_val, last_seg, current);
                     }
                 } else {
-                    ds->root = current;
+                    ds->root = current->u.object_val;
                 }
             }
             if (!current) { ely_free(seg); return NULL; }
-            // Проверим, что current – массив
-            // В нашей реализации мы не храним тип явно, поэтому будем предполагать, что если узел – arr*, то это массив.
-            // Для простоты будем проверять, что это указатель на arr, но это ненадёжно. Лучше хранить тип.
-            // Пока сделаем предположение.
             if (cur == NULL) {
                 // последний сегмент – индекс, возвращаем элемент массива
                 if (is_array) *is_array = 1;
-                void* elem = arr_get(current, (size_t)index);
-                if (elem) return *(void**)elem;
+                ely_value* elem = arr_get(current->u.array_val, (size_t)index);
+                if (elem) return elem;
                 if (create) {
-                    void* new_elem = NULL;
-                    arr_set(current, (size_t)index, &new_elem);
-                    return &new_elem;
+                    ely_value* new_elem = ely_value_new_null();
+                    arr_set(current->u.array_val, (size_t)index, new_elem);
+                    return new_elem;
                 }
                 return NULL;
             } else {
                 // переходим в элемент массива
-                void* elem_ptr = arr_get(current, (size_t)index);
+                ely_value* elem_ptr = arr_get(current->u.array_val, (size_t)index);
                 if (!elem_ptr && create) {
-                    void* new_elem = NULL;
-                    arr_set(current, (size_t)index, &new_elem);
-                    elem_ptr = &new_elem;
+                    ely_value* new_elem = ely_value_new_null();
+                    arr_set(current->u.array_val, (size_t)index, new_elem);
+                    elem_ptr = new_elem;
                 }
                 parent = current;
                 last_seg = seg;
                 last_is_array = 1;
-                current = elem_ptr ? *(void**)elem_ptr : NULL;
+                current = elem_ptr;
                 continue;
             }
         } else {
@@ -93,42 +89,42 @@ static void* get_node(DictServer* ds, char* path, int create, int* is_array) {
             if (!current) {
                 if (!create) { ely_free(seg); return NULL; }
                 // создать словарь
-                current = dict_new_str(sizeof(void*));
+                dict* d = dict_new_str();
+                current = ely_value_new_object(d);
                 if (parent) {
                     if (last_is_array) {
-                        arr_set(parent, (size_t)index, &current);
+                        arr_set(parent->u.array_val, (size_t)index, current);
                     } else {
-                        dict_set_str(parent, last_seg, &current);
+                        dict_set_str(parent->u.object_val, last_seg, current);
                     }
                 } else {
-                    ds->root = current;
+                    ds->root = current->u.object_val;
                 }
             }
             if (!current) { ely_free(seg); return NULL; }
             if (cur == NULL) {
                 // последний сегмент – ключ
                 if (is_array) *is_array = 0;
-                void* val = dict_get(current, seg);
+                ely_value* val = dict_get_str(current->u.object_val, seg);
                 if (val) return val;
                 if (create) {
-                    void* new_val = NULL;
-                    dict_set_str(current, seg, &new_val);
-                    // возвращаем указатель на новое значение
-                    return &new_val;
+                    ely_value* new_val = ely_value_new_null();
+                    dict_set_str(current->u.object_val, seg, new_val);
+                    return new_val;
                 }
                 return NULL;
             } else {
                 // переходим в словарь по ключу
-                void* val = dict_get(current, seg);
+                ely_value* val = dict_get_str(current->u.object_val, seg);
                 if (!val && create) {
-                    void* new_val = NULL;
-                    dict_set_str(current, seg, &new_val);
-                    val = &new_val;
+                    ely_value* new_val = ely_value_new_null();
+                    dict_set_str(current->u.object_val, seg, new_val);
+                    val = new_val;
                 }
                 parent = current;
                 last_seg = seg;
                 last_is_array = 0;
-                current = val ? *(void**)val : NULL;
+                current = val;
                 continue;
             }
         }
@@ -141,13 +137,13 @@ static void* get_node(DictServer* ds, char* path, int create, int* is_array) {
 static DictServer* new_dictserver(char* path) {
     DictServer* ds = ely_alloc(sizeof(DictServer));
     ds->path = path ? ely_str_dup(path) : NULL;
-    ds->root = dict_new(sizeof(void*));
+    ds->root = dict_new_str();
     return ds;
 }
 
 void DictServer_save(DictServer* ds) {
     if (!ds || !ds->path) return;
-    ely_str json = dict_to_json(ds->root);
+    ely_str json = ely_dict_to_json(ds->root);
     FILE* f = fopen(ds->path, "w");
     if (f) {
         fputs(json, f);
@@ -156,122 +152,103 @@ void DictServer_save(DictServer* ds) {
     ely_free(json);
 }
 
-// Реализация get-функций
+// Реализация get-функций (возвращают сырые типы, извлекая из ely_value)
 ely_str DictServer_get_str(DictServer* ds, char* path) {
-    void* node = get_node(ds, path, 0, NULL);
-    if (!node) return NULL;
-    // предполагаем, что node указывает на ely_str
-    ely_str* s = (ely_str*)node;
-    return *s ? ely_str_dup(*s) : NULL;
+    ely_value* node = get_node(ds, path, 0, NULL);
+    if (!node || node->type != ely_VALUE_STRING) return NULL;
+    return node->u.string_val ? ely_str_dup(node->u.string_val) : NULL;
 }
 
 ely_int DictServer_get_int(DictServer* ds, char* path) {
-    void* node = get_node(ds, path, 0, NULL);
-    if (!node) return 0;
-    // предполагаем int*
-    int* i = (int*)node;
-    return *i;
+    ely_value* node = get_node(ds, path, 0, NULL);
+    if (!node || node->type != ely_VALUE_INT) return 0;
+    return (ely_int)node->u.int_val;
 }
 
 ely_bool DictServer_get_bool(DictServer* ds, char* path) {
-    void* node = get_node(ds, path, 0, NULL);
-    if (!node) return 0;
-    int* b = (int*)node;
-    return *b;
+    ely_value* node = get_node(ds, path, 0, NULL);
+    if (!node || node->type != ely_VALUE_BOOL) return 0;
+    return node->u.bool_val;
 }
 
 ely_double DictServer_get_double(DictServer* ds, char* path) {
-    void* node = get_node(ds, path, 0, NULL);
-    if (!node) return 0.0;
-    double* d = (double*)node;
-    return *d;
+    ely_value* node = get_node(ds, path, 0, NULL);
+    if (!node || node->type != ely_VALUE_DOUBLE) return 0.0;
+    return node->u.double_val;
 }
 
 dict* DictServer_get_dict(DictServer* ds, char* path) {
-    void* node = get_node(ds, path, 0, NULL);
-    if (!node) return NULL;
-    dict** d = (dict**)node;
-    return *d;
+    ely_value* node = get_node(ds, path, 0, NULL);
+    if (!node || node->type != ely_VALUE_OBJECT) return NULL;
+    return node->u.object_val;
 }
 
 arr* DictServer_get_array(DictServer* ds, char* path) {
-    void* node = get_node(ds, path, 0, NULL);
-    if (!node) return NULL;
-    arr** a = (arr**)node;
-    return *a;
+    ely_value* node = get_node(ds, path, 0, NULL);
+    if (!node || node->type != ely_VALUE_ARRAY) return NULL;
+    return node->u.array_val;
 }
 
 // Установка значений (создаёт путь)
 void DictServer_set_str(DictServer* ds, char* path, ely_str value) {
-    void* node = get_node(ds, path, 1, NULL);
+    ely_value* node = get_node(ds, path, 1, NULL);
     if (!node) return;
-    ely_str* dest = (ely_str*)node;
-    if (*dest) ely_free(*dest);
-    *dest = value ? ely_str_dup(value) : NULL;
+    if (node->type != ely_VALUE_STRING) {
+        // если узел был другого типа, заменяем
+        ely_value* new_val = ely_value_new_string(value);
+        // нужно обновить ссылку в родителе – здесь сложно, упрощаем: меняем тип напрямую
+        node->type = ely_VALUE_STRING;
+        if (node->u.string_val) ely_free(node->u.string_val);
+        node->u.string_val = value ? ely_str_dup(value) : NULL;
+        return;
+    }
+    if (node->u.string_val) ely_free(node->u.string_val);
+    node->u.string_val = value ? ely_str_dup(value) : NULL;
 }
 
 void DictServer_set_int(DictServer* ds, char* path, ely_int value) {
-    void* node = get_node(ds, path, 1, NULL);
+    ely_value* node = get_node(ds, path, 1, NULL);
     if (!node) return;
-    int* dest = (int*)node;
-    *dest = value;
+    node->type = ely_VALUE_INT;
+    node->u.int_val = value;
 }
 
 void DictServer_set_bool(DictServer* ds, char* path, ely_bool value) {
-    void* node = get_node(ds, path, 1, NULL);
+    ely_value* node = get_node(ds, path, 1, NULL);
     if (!node) return;
-    int* dest = (int*)node;
-    *dest = value;
+    node->type = ely_VALUE_BOOL;
+    node->u.bool_val = value;
 }
 
 void DictServer_set_double(DictServer* ds, char* path, ely_double value) {
-    void* node = get_node(ds, path, 1, NULL);
+    ely_value* node = get_node(ds, path, 1, NULL);
     if (!node) return;
-    double* dest = (double*)node;
-    *dest = value;
+    node->type = ely_VALUE_DOUBLE;
+    node->u.double_val = value;
 }
 
 void DictServer_set_dict(DictServer* ds, char* path, dict* value) {
-    void* node = get_node(ds, path, 1, NULL);
+    ely_value* node = get_node(ds, path, 1, NULL);
     if (!node) return;
-    dict** dest = (dict**)node;
-    if (*dest) dict_free(*dest);
-    // Создаём копию словаря (нужна функция dict_copy)
-    // Пока просто сохраняем ссылку (осторожно!)
-    *dest = value; // владение передаётся серверу? Лучше копировать.
-    // Для упрощения пусть будет ссылка.
+    node->type = ely_VALUE_OBJECT;
+    if (node->u.object_val && node->u.object_val != value) dict_free(node->u.object_val);
+    node->u.object_val = value;
 }
 
 void DictServer_set_array(DictServer* ds, char* path, arr* value) {
-    void* node = get_node(ds, path, 1, NULL);
+    ely_value* node = get_node(ds, path, 1, NULL);
     if (!node) return;
-    arr** dest = (arr**)node;
-    if (*dest) arr_free(*dest);
-    *dest = value;
-}
-
-void DictServer_set_null(DictServer* ds, char* path) {
-    void* node = get_node(ds, path, 1, NULL);
-    if (!node) return;
-    // Удаляем значение, установив NULL
-    // Но в нашем представлении NULL – это особое значение.
-    // Для простоты установим NULL в соответствующем месте.
-    // Нужно определить, как хранить NULL. Можно хранить NULL-указатель.
-    // В get_node, если значение NULL, оно вернётся как NULL.
-    // При установке мы просто кладём NULL.
-    // Однако в текущей реализации set_str и др. не поддерживают NULL.
-    // Поэтому лучше выделить специальную функцию.
-    // Пока оставим заглушку.
+    node->type = ely_VALUE_ARRAY;
+    if (node->u.array_val && node->u.array_val != value) arr_free(node->u.array_val);
+    node->u.array_val = value;
 }
 
 void DictServer_delete(DictServer* ds, char* path) {
-    // Удаление узла по пути. Нужно найти родительский узел и удалить ключ/индекс.
-    // Это сложнее. Пока не реализуем.
+    // удаление узла – не реализовано
 }
 
 arr* DictServer_query(DictServer* ds, char* filter) {
-    // Простой поиск – заглушка
-    return arr_new(sizeof(void*));
+    return arr_new();
 }
 
 void DictServer_free(DictServer* ds) {
@@ -283,93 +260,89 @@ void DictServer_free(DictServer* ds) {
 }
 
 // ======================== Экспортируемые функции для модуля ========================
-void* load(char* path) {
+ely_value* load(char* path) {
     DictServer* ds = new_dictserver(path);
-    // Если файл существует, загрузить из него (можно реализовать позже)
-    return ds;
+    return ely_value_new_object(ds->root);
 }
 
-void save(void* host, char* path) {
-    DictServer* ds = (DictServer*)host;
-    if (ds) {
-        if (path) {
-            if (ds->path) ely_free(ds->path);
-            ds->path = ely_str_dup(path);
-        }
-        DictServer_save(ds);
-    }
+void save(ely_value* host, char* path) {
+    if (!host || host->type != ely_VALUE_OBJECT) return;
+    DictServer ds;
+    ds.path = path ? ely_str_dup(path) : NULL;
+    ds.root = host->u.object_val;
+    DictServer_save(&ds);
+    if (ds.path) ely_free(ds.path);
 }
 
-char* getStr(void* host, char* key) {
-    return DictServer_get_str((DictServer*)host, key);
+char* getStr(ely_value* host, char* key) {
+    if (!host || host->type != ely_VALUE_OBJECT) return NULL;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    return DictServer_get_str(&ds, key);
 }
 
-int getInt(void* host, char* key) {
-    return DictServer_get_int((DictServer*)host, key);
+int getInt(ely_value* host, char* key) {
+    if (!host || host->type != ely_VALUE_OBJECT) return 0;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    return DictServer_get_int(&ds, key);
 }
 
-int getBool(void* host, char* key) {
-    return DictServer_get_bool((DictServer*)host, key);
+int getBool(ely_value* host, char* key) {
+    if (!host || host->type != ely_VALUE_OBJECT) return 0;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    return DictServer_get_bool(&ds, key);
 }
 
-double getDouble(void* host, char* key) {
-    return DictServer_get_double((DictServer*)host, key);
+double getDouble(ely_value* host, char* key) {
+    if (!host || host->type != ely_VALUE_OBJECT) return 0.0;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    return DictServer_get_double(&ds, key);
 }
 
-void* getObj(void* host, char* key) {
-    return DictServer_get_dict((DictServer*)host, key);
-}
-
-void setStr(void* host, char* key, char* value) {
-    DictServer_set_str((DictServer*)host, key, value);
-}
-
-void setInt(void* host, char* key, int value) {
-    DictServer_set_int((DictServer*)host, key, value);
-}
-
-void setBool(void* host, char* key, int value) {
-    DictServer_set_bool((DictServer*)host, key, value);
-}
-
-void setDouble(void* host, char* key, double value) {
-    DictServer_set_double((DictServer*)host, key, value);
-}
-
-void setObj(void* host, char* key, void* value) {
-    DictServer_set_dict((DictServer*)host, key, (dict*)value);
-}
-
-void del(void* host, char* key) {
-    DictServer_delete((DictServer*)host, key);
-}
-
-int has(void* host, char* key) {
-    // Реализуйте DictServer_has, если нужно, или используйте dict_has_str
-    return 0; // заглушка
-}
-
-arr* keys(void* host) {
-    DictServer* ds = (DictServer*)host;
-    if (!ds || !ds->root) return arr_new(sizeof(char*));
-    return dict_keys_str(ds->root);
-}
-
-char* toJson(void* host) {
-    DictServer* ds = (DictServer*)host;
-    if (!ds || !ds->root) return ely_str_dup("null");
-    return ely_dict_to_json(ds->root);
-}
-
-void* parse(char* json) {
-    dict* d = ely_dictify(json);
+ely_value* getObj(ely_value* host, char* key) {
+    if (!host || host->type != ely_VALUE_OBJECT) return NULL;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    dict* d = DictServer_get_dict(&ds, key);
     if (!d) return NULL;
-    DictServer* ds = ely_alloc(sizeof(DictServer));
-    ds->path = NULL;
-    ds->root = d;
-    return ds;
+    return ely_value_new_object(d);
 }
 
-void freeDict(void* host) {
-    DictServer_free((DictServer*)host);
+void setStr(ely_value* host, char* key, char* value) {
+    if (!host || host->type != ely_VALUE_OBJECT) return;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    DictServer_set_str(&ds, key, value);
+}
+
+void setInt(ely_value* host, char* key, int value) {
+    if (!host || host->type != ely_VALUE_OBJECT) return;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    DictServer_set_int(&ds, key, value);
+}
+
+void setBool(ely_value* host, char* key, int value) {
+    if (!host || host->type != ely_VALUE_OBJECT) return;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    DictServer_set_bool(&ds, key, value);
+}
+
+void setDouble(ely_value* host, char* key, double value) {
+    if (!host || host->type != ely_VALUE_OBJECT) return;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    DictServer_set_double(&ds, key, value);
+}
+
+void setObj(ely_value* host, char* key, ely_value* value) {
+    if (!host || host->type != ely_VALUE_OBJECT) return;
+    if (!value || value->type != ely_VALUE_OBJECT) return;
+    DictServer ds;
+    ds.root = host->u.object_val;
+    DictServer_set_dict(&ds, key, value->u.object_val);
 }

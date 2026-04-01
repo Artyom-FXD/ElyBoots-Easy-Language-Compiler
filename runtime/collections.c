@@ -1,74 +1,74 @@
 #include "collections.h"
+#include "ely_runtime.h"   // для ely_value
 #include <stdlib.h>
 #include <string.h>
 
 // ------------------------ arr ------------------------
-arr* arr_new(size_t elem_size) {
+arr* arr_new(void) {
     arr* a = (arr*)malloc(sizeof(arr));
     if (!a) return NULL;
     a->data = NULL;
     a->size = 0;
     a->capacity = 0;
-    a->elem_size = elem_size;
     return a;
 }
 
 void arr_free(arr* a) {
     if (a) {
+        for (size_t i = 0; i < a->size; i++) {
+            if (a->data[i]) ely_value_free(a->data[i]);
+        }
         free(a->data);
         free(a);
     }
 }
 
-void arr_reserve(arr* a, size_t new_cap) {   // было static void arr_reserve
+static void arr_reserve(arr* a, size_t new_cap) {
     if (new_cap <= a->capacity) return;
-    void* new_data = realloc(a->data, new_cap * a->elem_size);
+    ely_value** new_data = (ely_value**)realloc(a->data, new_cap * sizeof(ely_value*));
     if (!new_data) return;
     a->data = new_data;
     a->capacity = new_cap;
 }
 
-void arr_push(arr* a, void* elem) {
+void arr_push(arr* a, ely_value* elem) {
     if (!a) return;
     if (a->size >= a->capacity) {
         size_t new_cap = a->capacity == 0 ? 4 : a->capacity * 2;
         arr_reserve(a, new_cap);
     }
-    memcpy((char*)a->data + a->size * a->elem_size, elem, a->elem_size);
-    a->size++;
+    a->data[a->size++] = elem;
 }
 
-void* arr_pop_value(arr* a) {
+ely_value* arr_pop_value(arr* a) {
     if (!a || a->size == 0) return NULL;
-    a->size--;
-    return (char*)a->data + a->size * a->elem_size;
+    return a->data[--a->size];
 }
 
 void arr_pop(arr* a) {
     if (a && a->size > 0) a->size--;
 }
 
-void* arr_get(arr* a, size_t index) {
+ely_value* arr_get(arr* a, size_t index) {
     if (!a || index >= a->size) return NULL;
-    return (char*)a->data + index * a->elem_size;
+    return a->data[index];
 }
 
-void arr_set(arr* a, size_t index, void* elem) {
+void arr_set(arr* a, size_t index, ely_value* elem) {
     if (!a || index >= a->size) return;
-    memcpy((char*)a->data + index * a->elem_size, elem, a->elem_size);
+    if (a->data[index]) ely_value_free(a->data[index]);
+    a->data[index] = elem;
 }
 
 size_t arr_len(arr* a) {
     return a ? a->size : 0;
 }
 
-int arr_remove_value(arr* a, void* value) {
+int arr_remove_value(arr* a, ely_value* value) {
     if (!a || a->size == 0) return -1;
     for (size_t i = 0; i < a->size; i++) {
-        if (memcmp((char*)a->data + i * a->elem_size, value, a->elem_size) == 0) {
-            size_t bytes = (a->size - i - 1) * a->elem_size;
-            memmove((char*)a->data + i * a->elem_size,
-                    (char*)a->data + (i + 1) * a->elem_size, bytes);
+        if (a->data[i] == value) {   // сравнение указателей, для точного сравнения нужна функция ely_value_equal
+            for (size_t j = i; j < a->size - 1; j++) a->data[j] = a->data[j+1];
             a->size--;
             return 0;
         }
@@ -78,53 +78,51 @@ int arr_remove_value(arr* a, void* value) {
 
 int arr_remove_index(arr* a, size_t index) {
     if (!a || index >= a->size) return -1;
-    size_t bytes = (a->size - index - 1) * a->elem_size;
-    memmove((char*)a->data + index * a->elem_size,
-            (char*)a->data + (index + 1) * a->elem_size, bytes);
+    for (size_t j = index; j < a->size - 1; j++) a->data[j] = a->data[j+1];
     a->size--;
     return 0;
 }
 
-int arr_insert(arr* a, size_t index, void* elem) {
+int arr_insert(arr* a, size_t index, ely_value* elem) {
     if (!a || index > a->size) return -1;
     if (a->size >= a->capacity) {
         size_t new_cap = a->capacity == 0 ? 4 : a->capacity * 2;
         arr_reserve(a, new_cap);
     }
-    size_t bytes = (a->size - index) * a->elem_size;
-    memmove((char*)a->data + (index + 1) * a->elem_size,
-            (char*)a->data + index * a->elem_size, bytes);
-    memcpy((char*)a->data + index * a->elem_size, elem, a->elem_size);
+    for (size_t j = a->size; j > index; j--) a->data[j] = a->data[j-1];
+    a->data[index] = elem;
     a->size++;
     return 0;
 }
 
-int arr_index(arr* a, void* value) {
+int arr_index(arr* a, ely_value* value) {
     if (!a) return -1;
     for (size_t i = 0; i < a->size; i++) {
-        if (memcmp((char*)a->data + i * a->elem_size, value, a->elem_size) == 0)
-            return (int)i;
+        if (a->data[i] == value) return (int)i;
     }
     return -1;
 }
 
 arr* arr_copy(arr* a) {
     if (!a) return NULL;
-    arr* copy = arr_new(a->elem_size);
+    arr* copy = arr_new();
     if (!copy) return NULL;
     arr_reserve(copy, a->capacity);
-    memcpy(copy->data, a->data, a->size * a->elem_size);
+    for (size_t i = 0; i < a->size; i++) {
+        copy->data[i] = a->data[i];
+        if (copy->data[i]) ; // ничего не делаем
+    }
     copy->size = a->size;
     return copy;
 }
 
-arr* arr_make(size_t count, size_t elem_size, ...) {
-    arr* a = arr_new(elem_size);
+arr* arr_make(size_t count, ...) {
+    arr* a = arr_new();
     if (!a) return NULL;
     va_list args;
-    va_start(args, elem_size);
+    va_start(args, count);
     for (size_t i = 0; i < count; i++) {
-        void* elem = va_arg(args, void*);
+        ely_value* elem = va_arg(args, ely_value*);
         arr_push(a, elem);
     }
     va_end(args);
@@ -132,29 +130,22 @@ arr* arr_make(size_t count, size_t elem_size, ...) {
 }
 
 // ------------------------ dict ------------------------
-static unsigned int default_hash(void* key) {
-    unsigned int h = 0;
-    unsigned char* p = (unsigned char*)key;
-    for (size_t i = 0; i < sizeof(unsigned int); i++)
-        h = (h << 5) + p[i];
-    return h;
+static unsigned int default_hash(ely_value* key) {
+    // для простоты, если ключ не строка – хешируем указатель
+    return (unsigned int)(size_t)key;
 }
 
-static int default_cmp(void* a, void* b) {
-    return memcmp(a, b, sizeof(unsigned int));
+static int default_cmp(ely_value* a, ely_value* b) {
+    return (a == b) ? 0 : 1;
 }
 
-dict* dict_new(size_t key_size, size_t value_size,
-               unsigned int (*hash)(void*),
-               int (*key_cmp)(void*, void*)) {
+dict* dict_new(unsigned int (*hash)(ely_value*), int (*key_cmp)(ely_value*, ely_value*)) {
     dict* d = (dict*)malloc(sizeof(dict));
     if (!d) return NULL;
     d->capacity = 16;
     d->buckets = (dict_entry**)calloc(d->capacity, sizeof(dict_entry*));
     if (!d->buckets) { free(d); return NULL; }
     d->size = 0;
-    d->key_size = key_size;
-    d->value_size = value_size;
     d->hash = hash ? hash : default_hash;
     d->key_cmp = key_cmp ? key_cmp : default_cmp;
     return d;
@@ -166,8 +157,8 @@ void dict_free(dict* d) {
         dict_entry* e = d->buckets[i];
         while (e) {
             dict_entry* next = e->next;
-            free(e->key);
-            free(e->value);
+            ely_value_free(e->key);
+            ely_value_free(e->value);
             free(e);
             e = next;
         }
@@ -195,7 +186,7 @@ static void dict_resize(dict* d, size_t new_cap) {
     d->capacity = new_cap;
 }
 
-void dict_set(dict* d, void* key, void* value) {
+void dict_set(dict* d, ely_value* key, ely_value* value) {
     if (!d) return;
     if (d->size >= d->capacity * 0.75) {
         dict_resize(d, d->capacity * 2);
@@ -205,24 +196,22 @@ void dict_set(dict* d, void* key, void* value) {
     dict_entry* e = d->buckets[idx];
     while (e) {
         if (d->key_cmp(e->key, key) == 0) {
-            memcpy(e->value, value, d->value_size);
+            ely_value_free(e->value);
+            e->value = value;
             return;
         }
         e = e->next;
     }
     e = (dict_entry*)malloc(sizeof(dict_entry));
     if (!e) return;
-    e->key = malloc(d->key_size);
-    e->value = malloc(d->value_size);
-    if (!e->key || !e->value) { free(e->key); free(e->value); free(e); return; }
-    memcpy(e->key, key, d->key_size);
-    memcpy(e->value, value, d->value_size);
+    e->key = key;
+    e->value = value;
     e->next = d->buckets[idx];
     d->buckets[idx] = e;
     d->size++;
 }
 
-void* dict_get(dict* d, void* key) {
+ely_value* dict_get(dict* d, ely_value* key) {
     if (!d) return NULL;
     unsigned int h = d->hash(key);
     size_t idx = h % d->capacity;
@@ -235,20 +224,11 @@ void* dict_get(dict* d, void* key) {
     return NULL;
 }
 
-int dict_has(dict* d, void* key) {
-    if (!d) return 0;
-    unsigned int h = d->hash(key);
-    size_t idx = h % d->capacity;
-    dict_entry* e = d->buckets[idx];
-    while (e) {
-        if (d->key_cmp(e->key, key) == 0)
-            return 1;
-        e = e->next;
-    }
-    return 0;
+int dict_has(dict* d, ely_value* key) {
+    return dict_get(d, key) != NULL;
 }
 
-int dict_delete(dict* d, void* key) {
+int dict_delete(dict* d, ely_value* key) {
     if (!d) return -1;
     unsigned int h = d->hash(key);
     size_t idx = h % d->capacity;
@@ -258,8 +238,8 @@ int dict_delete(dict* d, void* key) {
         if (d->key_cmp(e->key, key) == 0) {
             if (prev) prev->next = e->next;
             else d->buckets[idx] = e->next;
-            free(e->key);
-            free(e->value);
+            ely_value_free(e->key);
+            ely_value_free(e->value);
             free(e);
             d->size--;
             return 0;
@@ -276,7 +256,7 @@ size_t dict_size(dict* d) {
 
 arr* dict_keys(dict* d) {
     if (!d) return NULL;
-    arr* keys = arr_new(d->key_size);
+    arr* keys = arr_new();
     if (!keys) return NULL;
     for (size_t i = 0; i < d->capacity; i++) {
         dict_entry* e = d->buckets[i];
@@ -290,7 +270,7 @@ arr* dict_keys(dict* d) {
 
 arr* dict_values(dict* d) {
     if (!d) return NULL;
-    arr* values = arr_new(d->value_size);
+    arr* values = arr_new();
     if (!values) return NULL;
     for (size_t i = 0; i < d->capacity; i++) {
         dict_entry* e = d->buckets[i];
@@ -302,16 +282,14 @@ arr* dict_values(dict* d) {
     return values;
 }
 
-dict* dict_make(size_t count, size_t key_size, size_t value_size,
-                unsigned int (*hash)(void*),
-                int (*key_cmp)(void*, void*), ...) {
-    dict* d = dict_new(key_size, value_size, hash, key_cmp);
+dict* dict_make(size_t count, ...) {
+    dict* d = dict_new(NULL, NULL);
     if (!d) return NULL;
     va_list args;
-    va_start(args, key_cmp);
+    va_start(args, count);
     for (size_t i = 0; i < count; i++) {
-        void* key = va_arg(args, void*);
-        void* value = va_arg(args, void*);
+        ely_value* key = va_arg(args, ely_value*);
+        ely_value* value = va_arg(args, ely_value*);
         dict_set(d, key, value);
     }
     va_end(args);
@@ -319,39 +297,54 @@ dict* dict_make(size_t count, size_t key_size, size_t value_size,
 }
 
 // Обёртки для строковых ключей
-unsigned int dict_hash_str(void* key) {
+unsigned int dict_hash_str(ely_value* key) {
+    if (!key || key->type != ely_VALUE_STRING) return 0;
     unsigned int hash = 5381;
-    char* str = (char*)key;
+    char* str = key->u.string_val;
     int c;
     while ((c = *str++))
         hash = ((hash << 5) + hash) + c;
     return hash;
 }
 
-int dict_cmp_str(void* a, void* b) {
-    return strcmp((char*)a, (char*)b);
+int dict_cmp_str(ely_value* a, ely_value* b) {
+    if (a == b) return 0;
+    if (!a || !b) return 1;
+    if (a->type != ely_VALUE_STRING || b->type != ely_VALUE_STRING) return 1;
+    return strcmp(a->u.string_val, b->u.string_val);
 }
 
-dict* dict_new_str(size_t value_size) {
-    return dict_new(sizeof(char*), value_size, dict_hash_str, dict_cmp_str);
+dict* dict_new_str(void) {
+    return dict_new(dict_hash_str, dict_cmp_str);
 }
 
-void dict_set_str(dict* d, char* key, void* value) {
-    dict_set(d, &key, value);
+void dict_set_str(dict* d, char* key, ely_value* value) {
+    ely_value* key_val = ely_value_new_string(key);
+    dict_set(d, key_val, value);
+    // key_val больше не нужен, т.к. dict_set его сохранил (мы передаём владение)
 }
 
-void* dict_get_str(dict* d, char* key) {
-    return dict_get(d, &key);
+ely_value* dict_get_str(dict* d, char* key) {
+    ely_value* key_val = ely_value_new_string(key);
+    ely_value* res = dict_get(d, key_val);
+    ely_value_free(key_val);
+    return res;
 }
 
 int dict_has_str(dict* d, char* key) {
-    return dict_has(d, &key);
+    ely_value* key_val = ely_value_new_string(key);
+    int res = dict_has(d, key_val);
+    ely_value_free(key_val);
+    return res;
 }
 
 int dict_delete_str(dict* d, char* key) {
-    return dict_delete(d, &key);
+    ely_value* key_val = ely_value_new_string(key);
+    int res = dict_delete(d, key_val);
+    ely_value_free(key_val);
+    return res;
 }
 
 arr* dict_keys_str(dict* d) {
-    return dict_keys(d);  // ключи уже char*
+    return dict_keys(d);
 }

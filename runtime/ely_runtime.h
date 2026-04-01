@@ -2,15 +2,33 @@
 #define ely_RUNTIME_H
 
 #include <stddef.h>
-typedef struct arr arr;
-typedef struct dict dict;
 #include "collections.h"
+
+typedef enum {
+    ely_VALUE_NULL,
+    ely_VALUE_BOOL,
+    ely_VALUE_INT,
+    ely_VALUE_DOUBLE,
+    ely_VALUE_STRING,
+    ely_VALUE_ARRAY,
+    ely_VALUE_OBJECT
+} ely_value_type;
+
+typedef struct ely_value {
+    ely_value_type type;
+    union {
+        int bool_val;
+        long long int_val;
+        double double_val;
+        char* string_val;
+        arr* array_val;
+        dict* object_val;
+    } u;
+} ely_value;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-int ely_file_write_all(char* path, char* data, size_t len);
 
 // Типы
 typedef int             ely_int;
@@ -24,6 +42,41 @@ typedef unsigned char   ely_byte;
 typedef unsigned char   ely_ubyte;
 typedef int             ely_bool;
 typedef char*           ely_str;
+
+// Конструкторы ely_value
+ely_value* ely_value_new_null(void);
+ely_value* ely_value_new_bool(int b);
+ely_value* ely_value_new_int(long long i);
+ely_value* ely_value_new_double(double d);
+ely_value* ely_value_new_string(char* s);
+ely_value* ely_value_new_array(arr* a);
+ely_value* ely_value_new_object(dict* d);
+void ely_value_free(ely_value* v);
+
+// Операции над ely_value
+int ely_value_as_bool(ely_value* v);
+ely_value* ely_value_index(ely_value* v, ely_value* index);
+ely_value* ely_value_get_key(ely_value* v, char* key);
+void ely_value_set_key(ely_value* v, char* key, ely_value* value);
+void ely_value_set_index(ely_value* v, ely_value* index, ely_value* value);
+char* ely_value_to_json(ely_value* v);
+ely_value* ely_value_from_json(char* json, size_t* pos);
+
+ely_value* ely_value_add(ely_value* a, ely_value* b);
+ely_value* ely_value_sub(ely_value* a, ely_value* b);
+ely_value* ely_value_mul(ely_value* a, ely_value* b);
+ely_value* ely_value_div(ely_value* a, ely_value* b);
+ely_value* ely_value_mod(ely_value* a, ely_value* b);
+ely_value* ely_value_eq(ely_value* a, ely_value* b);
+ely_value* ely_value_ne(ely_value* a, ely_value* b);
+ely_value* ely_value_lt(ely_value* a, ely_value* b);
+ely_value* ely_value_le(ely_value* a, ely_value* b);
+ely_value* ely_value_gt(ely_value* a, ely_value* b);
+ely_value* ely_value_ge(ely_value* a, ely_value* b);
+ely_value* ely_value_and(ely_value* a, ely_value* b);
+ely_value* ely_value_or(ely_value* a, ely_value* b);
+ely_value* ely_value_not(ely_value* a);
+ely_value* ely_value_neg(ely_value* a);
 
 // ------------------------ Консоль ------------------------
 void ely_print(ely_str str);
@@ -123,36 +176,17 @@ char* ely_call_str_void(void* func);
 void* ely_alloc(size_t size);
 void  ely_free(void* ptr);
 
-// ------------------------ ely_value (forward declaration) ------------------------
-typedef struct ely_value ely_value;   // обязательно до первого использования
-char* ely_value_to_json(ely_value* v);
-ely_value* ely_value_from_json(char* json, size_t* pos);
-
-// ------------------------ JSON для сложных типов (адаптировано под arr/dict) ------------------------
+// ------------------------ JSON для сложных типов ------------------------
 char* ely_dict_to_json(dict* d);
 char* ely_array_to_json(arr* a);
 char* ely_jsonify(dict* d);
 dict* ely_dictify(char* json);
 
-// ------------------------ DictServer API (с void*) ------------------------
-void* load(char* path);
-void save(void* host, char* path);
-char* getStr(void* host, char* key);
-int getInt(void* host, char* key);
-int getBool(void* host, char* key);
-double getDouble(void* host, char* key);
-void* getObj(void* host, char* key);
-void setStr(void* host, char* key, char* value);
-void setInt(void* host, char* key, int value);
-void setBool(void* host, char* key, int value);
-void setDouble(void* host, char* key, double value);
-void setObj(void* host, char* key, void* value);
-void del(void* host, char* key);
-int has(void* host, char* key);
-arr* keys(void* host);
-char* toJson(void* host);
-void* parse(char* json);
-void freeDict(void* host);
+// ------------------------ Функции для словарей (any) ------------------------
+arr* keys(ely_value* host);
+void del(ely_value* host, char* key);
+int has(ely_value* host, char* key);
+char* toJson(ely_value* host);
 
 #ifdef __cplusplus
 }

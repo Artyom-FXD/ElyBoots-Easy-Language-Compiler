@@ -491,72 +491,40 @@ static char* _jsonify_string(char* s) {
     return result;
 }
 
-char* ely_dict_to_json(dict* d) {
-    if (!d) return ely_str_dup("null");
-    char* result = ely_str_dup("{");
-    int first = 1;
-    arr* keys = dict_keys(d);
-    if (keys) {
-        for (size_t i = 0; i < arr_len(keys); i++) {
-            char** key_ptr = (char**)arr_get(keys, i);
-            if (!key_ptr) continue;
-            char* key = *key_ptr;
-            void* value_ptr = dict_get(d, &key);
-            if (!value_ptr) continue;
-            char** val_str = (char**)value_ptr;
-            if (!first) result = ely_str_concat(result, ",");
-            first = 0;
-            char* key_json = _jsonify_string(key);
-            result = ely_str_concat(result, key_json);
-            ely_free(key_json);
-            result = ely_str_concat(result, ":");
-            char* val_json = _jsonify_string(val_str ? *val_str : "null");
-            result = ely_str_concat(result, val_json);
-            ely_free(val_json);
-        }
-        arr_free(keys);
-    }
-    result = ely_str_concat(result, "}");
-    return result;
-}
-
 char* ely_array_to_json(arr* a) {
     if (!a) return ely_str_dup("null");
     char* result = ely_str_dup("[");
     for (size_t i = 0; i < arr_len(a); i++) {
         if (i > 0) result = ely_str_concat(result, ",");
-        if (a->elem_size == sizeof(int)) {
-            int val = *(int*)arr_get(a, i);
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%d", val);
-            char* val_json = ely_str_dup(buf);
-            result = ely_str_concat(result, val_json);
-            ely_free(val_json);
-        } else if (a->elem_size == sizeof(long long)) {
-            long long val = *(long long*)arr_get(a, i);
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%lld", val);
-            char* val_json = ely_str_dup(buf);
-            result = ely_str_concat(result, val_json);
-            ely_free(val_json);
-        } else if (a->elem_size == sizeof(double)) {
-            double val = *(double*)arr_get(a, i);
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%g", val);
-            char* val_json = ely_str_dup(buf);
-            result = ely_str_concat(result, val_json);
-            ely_free(val_json);
-        } else if (a->elem_size == sizeof(char*)) {
-            char** valp = (char**)arr_get(a, i);
-            char* val = valp ? *valp : NULL;
-            char* val_json = _jsonify_string(val ? val : "null");
-            result = ely_str_concat(result, val_json);
-            ely_free(val_json);
-        } else {
-            result = ely_str_concat(result, "null");
-        }
+        ely_value* elem = arr_get(a, i);
+        char* elem_json = ely_value_to_json(elem);
+        result = ely_str_concat(result, elem_json);
+        ely_free(elem_json);
     }
     result = ely_str_concat(result, "]");
+    return result;
+}
+
+char* ely_dict_to_json(dict* d) {
+    if (!d) return ely_str_dup("null");
+    char* result = ely_str_dup("{");
+    int first = 1;
+    for (size_t i = 0; i < d->capacity; i++) {
+        dict_entry* e = d->buckets[i];
+        while (e) {
+            if (!first) result = ely_str_concat(result, ",");
+            first = 0;
+            char* key_json = ely_value_to_json(e->key);
+            char* val_json = ely_value_to_json(e->value);
+            result = ely_str_concat(result, key_json);
+            result = ely_str_concat(result, ":");
+            result = ely_str_concat(result, val_json);
+            ely_free(key_json);
+            ely_free(val_json);
+            e = e->next;
+        }
+    }
+    result = ely_str_concat(result, "}");
     return result;
 }
 
@@ -639,7 +607,7 @@ dict* ely_dictify(ely_str json_str) {
     json_parser parser = { json_str, 0, strlen(json_str) };
     skip_whitespace(&parser);
     if (!consume(&parser, '{')) return NULL;
-    dict* d = dict_new_str(sizeof(char*));
+    dict* d = dict_new_str();
     while (1) {
         skip_whitespace(&parser);
         if (peek(&parser) == '}') {
@@ -691,7 +659,7 @@ static char* parse_value(json_parser* p) {
 
 static dict* parse_object(json_parser* p) {
     if (!consume(p, '{')) return NULL;
-    dict* d = dict_new_str(sizeof(char*));
+    dict* d = dict_new_str();
     while (1) {
         skip_whitespace(p);
         if (peek(p) == '}') {
@@ -716,7 +684,7 @@ static dict* parse_object(json_parser* p) {
 
 static arr* parse_array(json_parser* p) {
     if (!consume(p, '[')) return NULL;
-    arr* a = arr_new(sizeof(char*));
+    arr* a = arr_new();
     while (1) {
         skip_whitespace(p);
         if (peek(p) == ']') {
@@ -742,28 +710,9 @@ int ely_file_write_all(char* path, char* data, size_t len) {
     return (written == len) ? 0 : -1;
 }
 
-// ------------------------ ely_value implementation (остаётся без изменений, но ссылается на arr/dict) ------------------------
-typedef enum {
-    ely_VALUE_NULL,
-    ely_VALUE_BOOL,
-    ely_VALUE_INT,
-    ely_VALUE_DOUBLE,
-    ely_VALUE_STRING,
-    ely_VALUE_ARRAY,
-    ely_VALUE_OBJECT
-} ely_value_type;
-
-typedef struct ely_value {
-    ely_value_type type;
-    union {
-        int bool_val;
-        long long int_val;
-        double double_val;
-        char* string_val;
-        arr* array_val;
-        dict* object_val;
-    } u;
-} ely_value;
+// ------------------------ ely_value implementation ------------------------
+// Обратите внимание: определения ely_value_type и ely_value уже есть в заголовочном файле ely_runtime.h,
+// поэтому здесь они не определяются заново. Они используются для внутренних нужд.
 
 ely_value* ely_value_new_null(void) {
     ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
@@ -840,7 +789,7 @@ static char* _value_to_json(const ely_value* v) {
             return ely_str_dup(buf);
         }
         case ely_VALUE_STRING:
-            return _jsonify_string(v->u.string_val ? v->u.string_val : "");
+            return _jsonify_string(v->u.string_val);
         case ely_VALUE_ARRAY:
             return ely_array_to_json(v->u.array_val);
         case ely_VALUE_OBJECT:
@@ -853,8 +802,259 @@ char* ely_value_to_json(ely_value* v) { return _value_to_json(v); }
 
 ely_value* ely_value_from_json(char* json, size_t* pos) {
     (void)pos;
-    // упрощённая реализация
     dict* d = ely_dictify(json);
     if (d) return ely_value_new_object(d);
     return NULL;
+}
+
+// ------------------------ Дополнительные функции ------------------------
+ely_value* ely_value_index(ely_value* v, ely_value* index) {
+    if (!v) return ely_value_new_null();
+    if (v->type == ely_VALUE_ARRAY) {
+        if (index->type == ely_VALUE_INT) {
+            size_t i = (size_t)index->u.int_val;
+            arr* a = v->u.array_val;
+            if (i < arr_len(a)) {
+                return arr_get(a, i);
+            }
+        }
+    } else if (v->type == ely_VALUE_OBJECT) {
+        if (index->type == ely_VALUE_STRING) {
+            dict* d = v->u.object_val;
+            return dict_get_str(d, index->u.string_val);
+        }
+    }
+    return ely_value_new_null();
+}
+
+ely_value* ely_value_get_key(ely_value* v, char* key) {
+    if (!v || v->type != ely_VALUE_OBJECT) return ely_value_new_null();
+    dict* d = v->u.object_val;
+    return dict_get_str(d, key);
+}
+
+void ely_value_set_key(ely_value* v, char* key, ely_value* value) {
+    if (!v || v->type != ely_VALUE_OBJECT) return;
+    dict* d = v->u.object_val;
+    dict_set_str(d, key, value);
+}
+
+void ely_value_set_index(ely_value* v, ely_value* index, ely_value* value) {
+    if (!v) return;
+    if (v->type == ely_VALUE_ARRAY && index->type == ely_VALUE_INT) {
+        size_t i = (size_t)index->u.int_val;
+        arr* a = v->u.array_val;
+        if (i < arr_len(a)) {
+            ely_value* old = arr_get(a, i);
+            if (old) ely_value_free(old);
+            arr_set(a, i, value);
+        }
+    } else if (v->type == ely_VALUE_OBJECT && index->type == ely_VALUE_STRING) {
+        dict* d = v->u.object_val;
+        dict_set_str(d, index->u.string_val, value);
+    }
+}
+
+// ------------------------ Базовые операции над ely_value ------------------------
+int ely_value_as_bool(ely_value* v) {
+    if (!v) return 0;
+    switch (v->type) {
+        case ely_VALUE_BOOL: return v->u.bool_val;
+        case ely_VALUE_INT: return v->u.int_val != 0;
+        case ely_VALUE_DOUBLE: return v->u.double_val != 0.0;
+        case ely_VALUE_STRING: return v->u.string_val && *v->u.string_val != '\0';
+        default: return 0;
+    }
+}
+
+ely_value* ely_value_add(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_null();
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
+            return ely_value_new_int(da + db);
+        else
+            return ely_value_new_double(da + db);
+    }
+    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
+        char* s = ely_str_concat(a->u.string_val, b->u.string_val);
+        return ely_value_new_string(s);
+    }
+    char* a_str = ely_value_to_json(a);
+    char* b_str = ely_value_to_json(b);
+    char* s = ely_str_concat(a_str, b_str);
+    ely_free(a_str);
+    ely_free(b_str);
+    return ely_value_new_string(s);
+}
+
+ely_value* ely_value_sub(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_null();
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
+            return ely_value_new_int(da - db);
+        else
+            return ely_value_new_double(da - db);
+    }
+    return ely_value_new_null();
+}
+
+ely_value* ely_value_mul(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_null();
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
+            return ely_value_new_int(da * db);
+        else
+            return ely_value_new_double(da * db);
+    }
+    return ely_value_new_null();
+}
+
+ely_value* ely_value_div(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_null();
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        if (db == 0.0) return ely_value_new_null();
+        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
+            return ely_value_new_int(da / db);
+        else
+            return ely_value_new_double(da / db);
+    }
+    return ely_value_new_null();
+}
+
+ely_value* ely_value_mod(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_null();
+    if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT) {
+        if (b->u.int_val == 0) return ely_value_new_null();
+        return ely_value_new_int(a->u.int_val % b->u.int_val);
+    }
+    return ely_value_new_null();
+}
+
+ely_value* ely_value_eq(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_bool(a == b);
+    if (a->type != b->type) return ely_value_new_bool(0);
+    switch (a->type) {
+        case ely_VALUE_BOOL: return ely_value_new_bool(a->u.bool_val == b->u.bool_val);
+        case ely_VALUE_INT: return ely_value_new_bool(a->u.int_val == b->u.int_val);
+        case ely_VALUE_DOUBLE: return ely_value_new_bool(a->u.double_val == b->u.double_val);
+        case ely_VALUE_STRING: return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) == 0);
+        default: return ely_value_new_bool(a == b);
+    }
+}
+
+ely_value* ely_value_ne(ely_value* a, ely_value* b) {
+    ely_value* eq = ely_value_eq(a, b);
+    int bval = ely_value_as_bool(eq);
+    ely_value_free(eq);
+    return ely_value_new_bool(!bval);
+}
+
+ely_value* ely_value_lt(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_bool(0);
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        return ely_value_new_bool(da < db);
+    }
+    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) < 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value* ely_value_le(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_bool(0);
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        return ely_value_new_bool(da <= db);
+    }
+    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) <= 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value* ely_value_gt(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_bool(0);
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        return ely_value_new_bool(da > db);
+    }
+    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) > 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value* ely_value_ge(ely_value* a, ely_value* b) {
+    if (!a || !b) return ely_value_new_bool(0);
+    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
+        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
+        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
+        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
+        return ely_value_new_bool(da >= db);
+    }
+    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) >= 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value* ely_value_and(ely_value* a, ely_value* b) {
+    return ely_value_new_bool(ely_value_as_bool(a) && ely_value_as_bool(b));
+}
+
+ely_value* ely_value_or(ely_value* a, ely_value* b) {
+    return ely_value_new_bool(ely_value_as_bool(a) || ely_value_as_bool(b));
+}
+
+ely_value* ely_value_not(ely_value* a) {
+    return ely_value_new_bool(!ely_value_as_bool(a));
+}
+
+ely_value* ely_value_neg(ely_value* a) {
+    if (!a) return ely_value_new_null();
+    if (a->type == ely_VALUE_INT)
+        return ely_value_new_int(-a->u.int_val);
+    if (a->type == ely_VALUE_DOUBLE)
+        return ely_value_new_double(-a->u.double_val);
+    return ely_value_new_null();
+}
+
+// ------------------------ Функции для словарей (any) ------------------------
+arr* keys(ely_value* host) {
+    if (!host || host->type != ely_VALUE_OBJECT) return arr_new();
+    return dict_keys_str(host->u.object_val);
+}
+
+void del(ely_value* host, char* key) {
+    if (!host || host->type != ely_VALUE_OBJECT) return;
+    dict_delete_str(host->u.object_val, key);
+}
+
+int has(ely_value* host, char* key) {
+    if (!host || host->type != ely_VALUE_OBJECT) return 0;
+    return dict_has_str(host->u.object_val, key);
+}
+
+char* toJson(ely_value* host) {
+    if (!host || host->type != ely_VALUE_OBJECT) return ely_str_dup("null");
+    return ely_dict_to_json(host->u.object_val);
 }

@@ -51,13 +51,10 @@ class CCodeGen:
                 return 'str'
             return 'any'
         elif isinstance(expr, Identifier):
-            # текущая область
             if expr.name in self.var_types:
                 return self._resolve_type_alias(self.var_types[expr.name])
-            # глобальная область
             if expr.name in self.global_types:
                 return self._resolve_type_alias(self.global_types[expr.name])
-            # родительские области (стек)
             for scope in reversed(self.scopes):
                 if expr.name in scope:
                     return self._resolve_type_alias(scope[expr.name])
@@ -67,78 +64,28 @@ class CCodeGen:
         elif isinstance(expr, UnaryOp):
             return self._get_expression_type(expr.operand)
         elif isinstance(expr, ArrayLiteral):
-            if expr.elements:
-                return f'arr<{self._get_expression_type(expr.elements[0])}>'
             return 'arr<any>'
         elif isinstance(expr, DictLiteral):
-            if expr.pairs:
-                key_type = self._get_expression_type(expr.pairs[0].key)
-                val_type = self._get_expression_type(expr.pairs[0].value)
-                return f'dict<{key_type}, {val_type}>'
             return 'dict<any, any>'
         elif isinstance(expr, IndexExpression):
-            target_type = self._get_expression_type(expr.target)
-            if target_type.startswith('arr<'):
-                inner = target_type[4:-1].strip()
-                return inner
-            elif target_type.startswith('dict<'):
-                inner = target_type[5:-1].strip()
-                depth = 0
-                comma_pos = -1
-                for i, ch in enumerate(inner):
-                    if ch == '<':
-                        depth += 1
-                    elif ch == '>':
-                        depth -= 1
-                    elif ch == ',' and depth == 0:
-                        comma_pos = i
-                        break
-                if comma_pos == -1:
-                    return 'any'
-                val_type = inner[comma_pos+1:].strip()
-                return val_type
             return 'any'
         elif isinstance(expr, MemberAccess):
-            obj_type = self._get_expression_type(expr.object)
-            if obj_type.startswith('dict<'):
-                inner = obj_type[5:-1].strip()
-                depth = 0
-                comma_pos = -1
-                for i, ch in enumerate(inner):
-                    if ch == '<':
-                        depth += 1
-                    elif ch == '>':
-                        depth -= 1
-                    elif ch == ',' and depth == 0:
-                        comma_pos = i
-                        break
-                if comma_pos == -1:
-                    return 'any'
-                val_type = inner[comma_pos+1:].strip()
-                return val_type
-            elif obj_type in self.structs:
-                fields = self.struct_fields.get(obj_type, {})
-                if expr.member in fields:
-                    return fields[expr.member]
-                else:
-                    self.error(f"Field '{expr.member}' not found in struct {obj_type}", expr)
-                    return 'any'
-            else:
-                self.error(f"Member access not implemented for type {obj_type}", expr)
-                return 'any'
+            return 'any'
         elif isinstance(expr, Call):
             if isinstance(expr.callee, MemberAccess):
                 obj = expr.callee.object
                 method = expr.callee.member
                 obj_type = self._get_expression_type(obj)
                 if obj_type.startswith('arr<'):
-                    inner = obj_type[4:-1].strip()
                     if method == 'len':
                         return 'int'
                     elif method == 'pop':
-                        return inner
+                        return 'any'
                     elif method == 'push':
                         return 'void'
+                elif obj_type.startswith('dict<'):
+                    if method == 'keys':
+                        return 'arr<str>'
             return 'any'
         return 'any'
 
@@ -156,13 +103,11 @@ class CCodeGen:
             'flt': 'float',
             'double': 'double',
             'str': 'char*',
-            'any': 'void*',
+            'any': 'ely_value*',
             'char': 'char',
         }
-        if ely_type.startswith('arr<'):
-            return 'arr*'
-        if ely_type.startswith('dict<'):
-            return 'dict*'
+        if ely_type.startswith('arr<') or ely_type.startswith('dict<'):
+            return 'ely_value*'
         if ely_type in mapping:
             return mapping[ely_type]
         if ely_type in self.structs:
@@ -286,8 +231,7 @@ class CCodeGen:
             if isinstance(init_node, ArrayLiteral):
                 self._gen_global_array_init(name, typ, init_node)
             elif isinstance(init_node, DictLiteral):
-                init_code = self.gen_expression(init_node)
-                self.emit(f"{name} = {init_code};")
+                self._gen_global_dict_init(name, typ, init_node)
             else:
                 init_code = self.gen_expression(init_node)
                 self.emit(f"{name} = {init_code};")
@@ -296,20 +240,28 @@ class CCodeGen:
 
     def _gen_global_array_init(self, name: str, typ: str, node: ArrayLiteral):
         if not node.elements:
-            self.emit(f"{name} = arr_new(sizeof(void*));")
+            self.emit(f"{name} = arr_new();")
             return
-        elem_type = self._get_expression_type(node.elements[0])
-        c_elem_type = self._type_to_c(elem_type)
-        self.emit(f"{name} = arr_new(sizeof({c_elem_type}));")
+        self.emit(f"{name} = arr_new();")
         for elem in node.elements:
             elem_code = self.gen_expression(elem)
-            if not self._is_lvalue(elem):
-                tmp_var = f"__tmp_global_{self.temp_counter}"
-                self.temp_counter += 1
-                self.emit(f"{c_elem_type} {tmp_var} = {elem_code};")
-                self.emit(f"arr_push({name}, &{tmp_var});")
-            else:
-                self.emit(f"arr_push({name}, &{elem_code});")
+            tmp_var = f"__tmp_global_{self.temp_counter}"
+            self.temp_counter += 1
+            self.emit(f"ely_value* {tmp_var} = {elem_code};")
+            self.emit(f"arr_push({name}, {tmp_var});")
+
+    def _gen_global_dict_init(self, name: str, typ: str, node: DictLiteral):
+        self.emit(f"{name} = dict_new_str();")
+        for pair in node.pairs:
+            key_code = self.gen_expression(pair.key)
+            val_code = self.gen_expression(pair.value)
+            key_tmp = f"__tmp_key_{self.temp_counter}"
+            self.temp_counter += 1
+            val_tmp = f"__tmp_val_{self.temp_counter}"
+            self.temp_counter += 1
+            self.emit(f"ely_value* {key_tmp} = {key_code};")
+            self.emit(f"ely_value* {val_tmp} = {val_code};")
+            self.emit(f"dict_set_str({name}, {key_tmp}->u.string_val, {val_tmp});")
 
     def _gen_struct(self, node: StructDeclaration):
         self.emit(f"struct {node.name} {{")
@@ -473,39 +425,25 @@ class CCodeGen:
         iterable_code = self.gen_expression(node.iterable)
 
         if iterable_type.startswith('arr<'):
-            elem_type = iterable_type[4:-1].strip()
-            c_elem_type = self._type_to_c(elem_type)
             counter_var = f"__i_{self.temp_counter}"
             self.temp_counter += 1
             self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < arr_len({iterable_code}); {counter_var}++) {{")
             self.indent += 1
-            elem_code = f"*({c_elem_type}*)arr_get({iterable_code}, {counter_var})"
+            elem_code = f"arr_get({iterable_code}, {counter_var})"
             if isinstance(node.item_decl, VariableDeclaration):
-                decl_type = node.item_decl.type or elem_type
+                decl_type = node.item_decl.type or 'any'
                 c_decl_type = self._type_to_c(decl_type)
                 self.emit_to_main(f"{c_decl_type} {node.item_decl.name} = {elem_code};")
                 self.var_types[node.item_decl.name] = decl_type
             else:
-                self.emit_to_main(f"{c_elem_type} {node.item_decl.name} = {elem_code};")
-                self.var_types[node.item_decl.name] = elem_type
+                self.emit_to_main(f"ely_value* {node.item_decl.name} = {elem_code};")
+                self.var_types[node.item_decl.name] = 'any'
             for stmt in node.body:
                 self.gen_statement(stmt)
             self.indent -= 1
             self.emit_to_main("}")
 
         elif iterable_type.startswith('dict<'):
-            inner = iterable_type[5:-1].strip()
-            depth = 0
-            comma_pos = -1
-            for i, ch in enumerate(inner):
-                if ch == '<': depth += 1
-                elif ch == '>': depth -= 1
-                elif ch == ',' and depth == 0: comma_pos = i; break
-            if comma_pos == -1:
-                val_type = 'any'
-            else:
-                val_type = inner[comma_pos+1:].strip()
-            c_val_type = self._type_to_c(val_type)
             keys_var = f"__keys_{self.temp_counter}"
             self.temp_counter += 1
             self.emit_to_main(f"arr* {keys_var} = dict_keys({iterable_code});")
@@ -513,16 +451,16 @@ class CCodeGen:
             self.temp_counter += 1
             self.emit_to_main(f"for (size_t {counter_var} = 0; {counter_var} < arr_len({keys_var}); {counter_var}++) {{")
             self.indent += 1
-            self.emit_to_main(f"char* __key = *(char**)arr_get({keys_var}, {counter_var});")
-            self.emit_to_main(f"{c_val_type} __value = *({c_val_type}*)dict_get_str({iterable_code}, __key);")
+            self.emit_to_main(f"ely_value* __key = arr_get({keys_var}, {counter_var});")
+            self.emit_to_main(f"ely_value* __value = dict_get({iterable_code}, __key);")
             if isinstance(node.item_decl, VariableDeclaration):
-                decl_type = node.item_decl.type or val_type
+                decl_type = node.item_decl.type or 'any'
                 c_decl_type = self._type_to_c(decl_type)
                 self.emit_to_main(f"{c_decl_type} {node.item_decl.name} = __value;")
                 self.var_types[node.item_decl.name] = decl_type
             else:
-                self.emit_to_main(f"{c_val_type} {node.item_decl.name} = __value;")
-                self.var_types[node.item_decl.name] = val_type
+                self.emit_to_main(f"ely_value* {node.item_decl.name} = __value;")
+                self.var_types[node.item_decl.name] = 'any'
             for stmt in node.body:
                 self.gen_statement(stmt)
             self.indent -= 1
@@ -643,17 +581,17 @@ class CCodeGen:
 
     def _gen_literal(self, node: Literal) -> str:
         if isinstance(node.value, bool):
-            return "1" if node.value else "0"
+            return f"ely_value_new_bool({1 if node.value else 0})"
         elif isinstance(node.value, int):
-            return str(node.value)
+            return f"ely_value_new_int({node.value})"
         elif isinstance(node.value, float):
-            return str(node.value)
+            return f"ely_value_new_double({node.value})"
         elif isinstance(node.value, str):
             escaped = node.value.replace('"', '\\"')
-            return f'"{escaped}"'
+            return f'ely_value_new_string("{escaped}")'
         elif node.value is None:
-            return "NULL"
-        return "0"
+            return "ely_value_new_null()"
+        return "ely_value_new_null()"
 
     def _gen_identifier(self, node: Identifier) -> str:
         return node.name
@@ -662,14 +600,35 @@ class CCodeGen:
         left = self.gen_expression(node.left)
         right = self.gen_expression(node.right)
         op = node.operator
-        return f"({left} {op} {right})"
+        op_map = {
+            '+': 'add',
+            '-': 'sub',
+            '*': 'mul',
+            '/': 'div',
+            '%': 'mod',
+            '==': 'eq',
+            '!=': 'ne',
+            '<': 'lt',
+            '<=': 'le',
+            '>': 'gt',
+            '>=': 'ge',
+            '&&': 'and',
+            '||': 'or',
+        }
+        func = f"ely_value_{op_map.get(op, op)}"
+        return f"{func}({left}, {right})"
 
     def _gen_unary_op(self, node: UnaryOp) -> str:
         operand = self.gen_expression(node.operand)
         op = node.operator
-        if op == '&':
+        if op == '!':
+            return f"ely_value_not({operand})"
+        elif op == '-':
+            return f"ely_value_neg({operand})"
+        elif op == '&':
             return f"(&{operand})"
-        return f"{op}{operand}"
+        else:
+            return f"{op}{operand}"
 
     def _is_lvalue(self, expr: Expression) -> bool:
         if isinstance(expr, Identifier):
@@ -683,44 +642,13 @@ class CCodeGen:
     def _gen_assignment(self, node: Assignment) -> str:
         if isinstance(node.target, MemberAccess):
             obj = self.gen_expression(node.target.object)
-            obj_type = self._get_expression_type(node.target.object)
-            if obj_type.startswith('dict<'):
-                value = self.gen_expression(node.value)
-                if not self._is_lvalue(node.value):
-                    val_type = self._get_expression_type(node.value)
-                    c_val_type = self._type_to_c(val_type)
-                    tmp_var = f"__tmp_{self.temp_counter}"
-                    self.temp_counter += 1
-                    self.emit_to_main(f"{c_val_type} {tmp_var} = {value};")
-                    return f"dict_set_str({obj}, \"{node.target.member}\", &{tmp_var})"
-                else:
-                    return f"dict_set_str({obj}, \"{node.target.member}\", &{value})"
+            value = self.gen_expression(node.value)
+            return f"ely_value_set_key({obj}, \"{node.target.member}\", {value})"
         if isinstance(node.target, IndexExpression):
             target = self.gen_expression(node.target.target)
             index = self.gen_expression(node.target.index)
             value = self.gen_expression(node.value)
-            target_type = self._get_expression_type(node.target.target)
-            if target_type.startswith('arr<'):
-                if not self._is_lvalue(node.value):
-                    val_type = self._get_expression_type(node.value)
-                    c_val_type = self._type_to_c(val_type)
-                    tmp_var = f"__tmp_{self.temp_counter}"
-                    self.temp_counter += 1
-                    self.emit_to_main(f"{c_val_type} {tmp_var} = {value};")
-                    return f"arr_set({target}, {index}, &{tmp_var})"
-                else:
-                    return f"arr_set({target}, {index}, &{value})"
-            elif target_type.startswith('dict<'):
-                key_code = index
-                if not self._is_lvalue(node.value):
-                    val_type = self._get_expression_type(node.value)
-                    c_val_type = self._type_to_c(val_type)
-                    tmp_var = f"__tmp_{self.temp_counter}"
-                    self.temp_counter += 1
-                    self.emit_to_main(f"{c_val_type} {tmp_var} = {value};")
-                    return f"dict_set_str({target}, {key_code}, &{tmp_var})"
-                else:
-                    return f"dict_set_str({target}, {key_code}, &{value})"
+            return f"ely_value_set_index({target}, {index}, {value})"
         target_code = self.gen_expression(node.target)
         value_code = self.gen_expression(node.value)
         return f"{target_code} = {value_code}"
@@ -729,7 +657,7 @@ class CCodeGen:
         cond = self.gen_expression(node.condition)
         then_expr = self.gen_expression(node.then_expr)
         else_expr = self.gen_expression(node.else_expr)
-        return f"({cond} ? {then_expr} : {else_expr})"
+        return f"((ely_value_as_bool({cond})) ? {then_expr} : {else_expr})"
 
     def _gen_fstring(self, node: FString) -> str:
         result = 'ely_str_dup("")'
@@ -739,144 +667,77 @@ class CCodeGen:
                 result = f'ely_str_concat({result}, "{escaped}")'
             else:
                 expr_code = self.gen_expression(part)
-                expr_type = self._get_expression_type(part)
-                if expr_type.startswith('dict<'):
-                    to_str = f"ely_dict_to_json({expr_code})"
-                elif expr_type.startswith('arr<'):
-                    to_str = f"ely_array_to_json({expr_code})"
-                elif expr_type in ('int','uint','more','umore','byte','ubyte'):
-                    to_str = f"ely_int_to_str({expr_code})"
-                elif expr_type in ('flt','double'):
-                    to_str = f"ely_double_to_str({expr_code})"
-                elif expr_type == 'bool':
-                    to_str = f"ely_bool_to_str({expr_code})"
-                else:
-                    to_str = f"ely_str_dup({expr_code})"
-                result = f'ely_str_concat({result}, {to_str})'
+                result = f'ely_str_concat({result}, ely_value_to_json({expr_code}))'
         return result
 
     def _gen_array_literal(self, node: ArrayLiteral) -> str:
         if not node.elements:
-            return "arr_new(sizeof(void*))"
-        elem_type = self._get_expression_type(node.elements[0])
-        c_elem_type = self._type_to_c(elem_type)
-        args = []
+            return "ely_value_new_array(arr_new())"
+        elems = []
         for elem in node.elements:
             elem_code = self.gen_expression(elem)
-            if not self._is_lvalue(elem):
-                tmp_var = f"__tmp_{self.temp_counter}"
-                self.temp_counter += 1
-                self.emit_to_main(f"{c_elem_type} {tmp_var} = {elem_code};")
-                args.append(f"&{tmp_var}")
-            else:
-                args.append(f"&{elem_code}")
-        args_str = ", ".join(args)
-        return f"arr_make({len(node.elements)}, sizeof({c_elem_type}), {args_str})"
+            tmp = f"__tmp_ary_{self.temp_counter}"
+            self.temp_counter += 1
+            self.emit_to_main(f"ely_value* {tmp} = {elem_code};")
+            elems.append(tmp)
+        arr_var = f"__arr_{self.temp_counter}"
+        self.temp_counter += 1
+        self.emit_to_main(f"arr* {arr_var} = arr_new();")
+        for e in elems:
+            self.emit_to_main(f"arr_push({arr_var}, {e});")
+        return f"ely_value_new_array({arr_var})"
 
     def _gen_dict_literal(self, node: DictLiteral) -> str:
         if not node.pairs:
-            return "dict_new_str(sizeof(void*))"
-        value_type = self._get_expression_type(node.pairs[0].value)
-        c_value_type = self._type_to_c(value_type)
-        result = f"dict_new_str(sizeof({c_value_type}))"
+            return "ely_value_new_object(dict_new_str())"
+        pairs = []
         for pair in node.pairs:
             key_code = self.gen_expression(pair.key)
             val_code = self.gen_expression(pair.value)
-            if not self._is_lvalue(pair.value):
-                tmp_var = f"__tmp_{self.temp_counter}"
-                self.temp_counter += 1
-                self.emit_to_main(f"{c_value_type} {tmp_var} = {val_code};")
-                result = f"({result}, dict_set_str({result}, {key_code}, &{tmp_var}))"
-            else:
-                result = f"({result}, dict_set_str({result}, {key_code}, &{val_code}))"
-        return result
+            key_tmp = f"__tmp_key_{self.temp_counter}"
+            self.temp_counter += 1
+            val_tmp = f"__tmp_val_{self.temp_counter}"
+            self.temp_counter += 1
+            self.emit_to_main(f"ely_value* {key_tmp} = {key_code};")
+            self.emit_to_main(f"ely_value* {val_tmp} = {val_code};")
+            pairs.append((key_tmp, val_tmp))
+        dict_var = f"__dict_{self.temp_counter}"
+        self.temp_counter += 1
+        self.emit_to_main(f"dict* {dict_var} = dict_new_str();")
+        for key, val in pairs:
+            self.emit_to_main(f"dict_set_str({dict_var}, {key}->u.string_val, {val});")
+        return f"ely_value_new_object({dict_var})"
 
     def _gen_index_expression(self, node: IndexExpression) -> str:
         target = self.gen_expression(node.target)
         index = self.gen_expression(node.index)
-        target_type = self._get_expression_type(node.target)
-        if target_type.startswith('arr<'):
-            inner = target_type[4:-1].strip()
-            c_inner = self._type_to_c(inner)
-            return f"*({c_inner}*)arr_get({target}, {index})"
-        elif target_type.startswith('dict<'):
-            inner = target_type[5:-1].strip()
-            depth = 0
-            comma_pos = -1
-            for i, ch in enumerate(inner):
-                if ch == '<': depth += 1
-                elif ch == '>': depth -= 1
-                elif ch == ',' and depth == 0: comma_pos = i; break
-            if comma_pos == -1:
-                val_type = 'any'
-            else:
-                val_type = inner[comma_pos+1:].strip()
-            c_val = self._type_to_c(val_type)
-            return f"*({c_val}*)dict_get_str({target}, {index})"
-        else:
-            self.error(f"Indexing not supported for type {target_type}", node)
-            return "NULL"
+        return f"ely_value_index({target}, {index})"
 
     def _gen_member_access(self, node: MemberAccess) -> str:
         obj = self.gen_expression(node.object)
-        obj_type = self._get_expression_type(node.object)
-        if obj_type.startswith('dict<'):
-            inner = obj_type[5:-1].strip()
-            depth = 0
-            comma_pos = -1
-            for i, ch in enumerate(inner):
-                if ch == '<': depth += 1
-                elif ch == '>': depth -= 1
-                elif ch == ',' and depth == 0: comma_pos = i; break
-            if comma_pos == -1:
-                val_type = 'any'
-            else:
-                val_type = inner[comma_pos+1:].strip()
-            c_val = self._type_to_c(val_type)
-            return f"*({c_val}*)dict_get_str({obj}, \"{node.member}\")"
-        else:
-            return f"{obj}.{node.member}"
+        return f"ely_value_get_key({obj}, \"{node.member}\")"
 
     def _gen_call(self, node: Call) -> str:
-        # Методы массивов и словарей (MemberAccess)
         if isinstance(node.callee, MemberAccess):
             obj = node.callee.object
             method = node.callee.member
             obj_type = self._get_expression_type(obj)
             obj_code = self.gen_expression(obj)
             if obj_type.startswith('arr<'):
-                inner = obj_type[4:-1].strip()
-                c_inner = self._type_to_c(inner)
                 if method == 'append':
                     if len(node.arguments) != 1:
                         self.error("append expects one argument", node)
                         return ""
                     arg_expr = node.arguments[0]
                     arg_code = self.gen_expression(arg_expr)
-                    if not self._is_lvalue(arg_expr):
-                        val_type = self._get_expression_type(arg_expr)
-                        c_val_type = self._type_to_c(val_type)
-                        tmp_var = f"__tmp_{self.temp_counter}"
-                        self.temp_counter += 1
-                        self.emit_to_main(f"{c_val_type} {tmp_var} = {arg_code};")
-                        return f"arr_push({obj_code}, &{tmp_var})"
-                    else:
-                        return f"arr_push({obj_code}, &{arg_code})"
+                    return f"arr_push({obj_code}, {arg_code})"
                 elif method == 'remove':
                     if len(node.arguments) != 1:
                         self.error("remove expects one argument (value)", node)
                         return ""
                     arg_expr = node.arguments[0]
                     arg_code = self.gen_expression(arg_expr)
-                    if not self._is_lvalue(arg_expr):
-                        val_type = self._get_expression_type(arg_expr)
-                        c_val_type = self._type_to_c(val_type)
-                        tmp_var = f"__tmp_{self.temp_counter}"
-                        self.temp_counter += 1
-                        self.emit_to_main(f"{c_val_type} {tmp_var} = {arg_code};")
-                        return f"arr_remove_value({obj_code}, &{tmp_var})"
-                    else:
-                        return f"arr_remove_value({obj_code}, &{arg_code})"
+                    return f"arr_remove_value({obj_code}, {arg_code})"
                 elif method == 'insert':
                     if len(node.arguments) != 2:
                         self.error("insert expects two arguments (index, value)", node)
@@ -885,39 +746,23 @@ class CCodeGen:
                     index_code = self.gen_expression(index_expr)
                     value_expr = node.arguments[1]
                     value_code = self.gen_expression(value_expr)
-                    if not self._is_lvalue(value_expr):
-                        val_type = self._get_expression_type(value_expr)
-                        c_val_type = self._type_to_c(val_type)
-                        tmp_var = f"__tmp_{self.temp_counter}"
-                        self.temp_counter += 1
-                        self.emit_to_main(f"{c_val_type} {tmp_var} = {value_code};")
-                        return f"arr_insert({obj_code}, {index_code}, &{tmp_var})"
-                    else:
-                        return f"arr_insert({obj_code}, {index_code}, &{value_code})"
+                    return f"arr_insert({obj_code}, {index_code}, {value_code})"
                 elif method == 'index':
                     if len(node.arguments) != 1:
                         self.error("index expects one argument (value)", node)
                         return ""
                     arg_expr = node.arguments[0]
                     arg_code = self.gen_expression(arg_expr)
-                    if not self._is_lvalue(arg_expr):
-                        val_type = self._get_expression_type(arg_expr)
-                        c_val_type = self._type_to_c(val_type)
-                        tmp_var = f"__tmp_{self.temp_counter}"
-                        self.temp_counter += 1
-                        self.emit_to_main(f"{c_val_type} {tmp_var} = {arg_code};")
-                        return f"arr_index({obj_code}, &{tmp_var})"
-                    else:
-                        return f"arr_index({obj_code}, &{arg_code})"
+                    return f"arr_index({obj_code}, {arg_code})"
                 elif method == 'pop':
                     if len(node.arguments) == 0:
-                        return f"*({c_inner}*)arr_pop_value({obj_code})"
+                        return f"arr_pop_value({obj_code})"
                     elif len(node.arguments) == 1:
                         index_expr = node.arguments[0]
                         index_code = self.gen_expression(index_expr)
                         tmp_var = f"__tmp_{self.temp_counter}"
                         self.temp_counter += 1
-                        self.emit_to_main(f"{c_inner} {tmp_var} = *({c_inner}*)arr_get({obj_code}, {index_code});")
+                        self.emit_to_main(f"ely_value* {tmp_var} = arr_get({obj_code}, {index_code});")
                         self.emit_to_main(f"arr_remove_index({obj_code}, {index_code});")
                         return tmp_var
                     else:
@@ -928,14 +773,28 @@ class CCodeGen:
             if obj_type.startswith('dict<'):
                 if method == 'keys':
                     return f"dict_keys({obj_code})"
+                elif method == 'del':
+                    if len(node.arguments) != 1:
+                        self.error("del expects one argument (key)", node)
+                        return ""
+                    key_expr = node.arguments[0]
+                    key_code = self.gen_expression(key_expr)
+                    return f"dict_delete({obj_code}, {key_code})"
+                elif method == 'has':
+                    if len(node.arguments) != 1:
+                        self.error("has expects one argument (key)", node)
+                        return ""
+                    key_expr = node.arguments[0]
+                    key_code = self.gen_expression(key_expr)
+                    return f"dict_has({obj_code}, {key_code})"
+                elif method == 'toJson':
+                    return f"ely_dict_to_json({obj_code})"
 
-        # Обычные вызовы функций (Identifier)
         if not isinstance(node.callee, Identifier):
             return ""
         func_name = node.callee.name
         args = [self.gen_expression(arg) for arg in node.arguments]
 
-        # Проверка на обобщённую функцию
         if func_name in self.original_functions:
             func_node = self.original_functions[func_name]
             if func_node.type_params:
@@ -955,48 +814,20 @@ class CCodeGen:
                 spec_name = self.generic_instances[key]
                 return f"{spec_name}({', '.join(args)})"
 
-        # print и println
         if func_name == 'print':
             if not node.arguments:
                 return 'ely_print("")'
             arg = node.arguments[0]
-            arg_type = self._get_expression_type(arg)
             arg_code = self.gen_expression(arg)
-            if arg_type.startswith('dict<'):
-                return f"ely_print(ely_dict_to_json({arg_code}))"
-            if arg_type.startswith('arr<'):
-                return f"ely_print(ely_array_to_json({arg_code}))"
-            if arg_type in ('int','uint','more','umore','byte','ubyte'):
-                return f"ely_print_int({arg_code})"
-            if arg_type in ('flt','double'):
-                return f"ely_print_double({arg_code})"
-            if arg_type == 'bool':
-                return f"ely_print_bool({arg_code})"
-            return f"ely_print({arg_code})"
+            return f"ely_print(ely_value_to_json({arg_code}))"
 
         if func_name == 'println':
             if not node.arguments:
                 return 'ely_println("")'
             arg = node.arguments[0]
-            arg_type = self._get_expression_type(arg)
             arg_code = self.gen_expression(arg)
-            if arg_type.startswith('dict<'):
-                return f"ely_println(ely_dict_to_json({arg_code}))"
-            if arg_type.startswith('arr<'):
-                return f"ely_println(ely_array_to_json({arg_code}))"
-            if arg_type == 'str':
-                return f"ely_println({arg_code})"
-            if arg_type in ('int','uint','more','umore','byte','ubyte'):
-                to_str = f"ely_int_to_str({arg_code})"
-            elif arg_type in ('flt','double'):
-                to_str = f"ely_double_to_str({arg_code})"
-            elif arg_type == 'bool':
-                to_str = f"ely_bool_to_str({arg_code})"
-            else:
-                to_str = f"ely_str_dup({arg_code})"
-            return f"ely_println({to_str})"
+            return f"ely_println(ely_value_to_json({arg_code}))"
 
-        # JSON
         if func_name == 'jsonify':
             if not node.arguments:
                 return 'ely_str_dup("")'
@@ -1004,11 +835,10 @@ class CCodeGen:
             return f"ely_jsonify({arg_code})"
         if func_name == 'dictify':
             if not node.arguments:
-                return "dict_new_str(sizeof(void*))"
+                return "dict_new_str()"
             arg_code = self.gen_expression(node.arguments[0])
             return f"ely_dictify({arg_code})"
 
-        # Стандартные функции
         stdlib = {
             'len': 'ely_str_len',
             'concat': 'ely_str_concat',
@@ -1064,7 +894,6 @@ class CCodeGen:
             c_func = stdlib[func_name]
             return f"{c_func}({', '.join(args)})"
 
-        # Пользовательская функция
         return f"{func_name}({', '.join(args)})"
 
     def _generate_specialization(self, func_node: MethodDeclaration, mapping: dict) -> str:

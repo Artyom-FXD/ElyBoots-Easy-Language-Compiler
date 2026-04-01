@@ -742,14 +742,20 @@ class SemanticAnalyzer:
             return 'dict<any, any>'
         first_key_type = self.visit_expression(node.pairs[0].key)
         first_val_type = self.visit_expression(node.pairs[0].value)
+        # проверяем, что все ключи одного типа
         for pair in node.pairs[1:]:
             key_type = self.visit_expression(pair.key)
-            val_type = self.visit_expression(pair.value)
             if not self.is_type_compatible(first_key_type, key_type):
-                self.error(f"Dictionary literal keys must have same type: {first_key_type} vs {key_type}", node)
-            if not self.is_type_compatible(first_val_type, val_type):
-                self.error(f"Dictionary literal values must have same type: {first_val_type} vs {val_type}", node)
-        return f'dict<{first_key_type}, {first_val_type}>'
+                # ключи разных типов – используем any
+                first_key_type = 'any'
+        # проверяем, что все значения одного типа
+        val_type = first_val_type
+        for pair in node.pairs[1:]:
+            val_type2 = self.visit_expression(pair.value)
+            if not self.is_type_compatible(val_type, val_type2):
+                # значения разных типов – используем any
+                val_type = 'any'
+        return f'dict<{first_key_type}, {val_type}>'
 
     def _index_expression_type(self, node: IndexExpression) -> Optional[str]:
         target_type = self.visit_expression(node.target)
