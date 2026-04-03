@@ -210,7 +210,7 @@ char* toJson(ely_value* dict);
 // other
 ely_bool isType(ely_value* value, const char* type_name);
 ely_bool isNull(ely_value* value);
-
+ely_bool isIn(ely_value* value, arr* in);
 
 #ifdef __cplusplus
 }

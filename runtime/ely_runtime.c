@@ -1220,3 +1220,12 @@ ely_bool isType(ely_value* value, const char* type_name) {
 ely_bool isNull(ely_value* value) {
     return value->type == ely_VALUE_NULL;
 }
+
+ely_bool isIn(ely_value* value, arr* in) {
+    for (int i = 0; i < arr_len(in); i++) {
+        if (ely_value_eq(value, arr_get(in, i))) {
+            return 1;
+        }
+    }
+    return 0;
+}
