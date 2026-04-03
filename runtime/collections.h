@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include "ely_gc.h"
 
 // forward declaration для ely_value
 typedef struct ely_value ely_value;

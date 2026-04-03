@@ -2,10 +2,11 @@
 #include "ely_runtime.h"   // для ely_value
 #include <stdlib.h>
 #include <string.h>
+#include "ely_gc.h"
 
 // ------------------------ arr ------------------------
 arr* arr_new(void) {
-    arr* a = (arr*)malloc(sizeof(arr));
+    arr* a = (arr*)gc_alloc(sizeof(arr), GC_OBJ_ARR);
     if (!a) return NULL;
     a->data = NULL;
     a->size = 0;
@@ -140,10 +141,10 @@ static int default_cmp(ely_value* a, ely_value* b) {
 }
 
 dict* dict_new(unsigned int (*hash)(ely_value*), int (*key_cmp)(ely_value*, ely_value*)) {
-    dict* d = (dict*)malloc(sizeof(dict));
+    dict* d = (dict*)gc_alloc(sizeof(dict), GC_OBJ_DICT);
     if (!d) return NULL;
     d->capacity = 16;
-    d->buckets = (dict_entry**)calloc(d->capacity, sizeof(dict_entry*));
+    d->buckets = (dict_entry**)gc_alloc(d->capacity * sizeof(dict_entry*), GC_OBJ_DICT);
     if (!d->buckets) { free(d); return NULL; }
     d->size = 0;
     d->hash = hash ? hash : default_hash;
@@ -169,7 +170,7 @@ void dict_free(dict* d) {
 
 static void dict_resize(dict* d, size_t new_cap) {
     if (new_cap < d->size) return;
-    dict_entry** new_buckets = (dict_entry**)calloc(new_cap, sizeof(dict_entry*));
+    dict_entry** new_buckets = (dict_entry**)gc_alloc(new_cap * sizeof(dict_entry*), GC_OBJ_DICT);
     if (!new_buckets) return;
     for (size_t i = 0; i < d->capacity; i++) {
         dict_entry* e = d->buckets[i];
@@ -202,7 +203,7 @@ void dict_set(dict* d, ely_value* key, ely_value* value) {
         }
         e = e->next;
     }
-    e = (dict_entry*)malloc(sizeof(dict_entry));
+    e = (dict_entry*)gc_alloc(sizeof(dict_entry), GC_OBJ_DICT);
     if (!e) return;
     e->key = key;
     e->value = value;

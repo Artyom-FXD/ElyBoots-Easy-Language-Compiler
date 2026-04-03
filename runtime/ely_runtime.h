@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include "collections.h"
+#include "ely_gc.h"
 
 typedef enum {
     ely_VALUE_NULL,

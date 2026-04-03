@@ -287,6 +287,30 @@ class ProjectBuilder:
             except subprocess.TimeoutExpired:
                 print(f"Compilation of runtime timed out")
                 return False
+        # Компилируем ely_gc.c
+        gc_c = self.build_runtime / 'ely_gc.c'
+        gc_obj = None
+        if gc_c.exists():
+            gc_obj = self.build_dir / 'gc.o'
+            cmd = [comp_path, '-c', str(gc_c), '-o', str(gc_obj)]
+            if self.optimization == 'hard':
+                cmd.append('-O2')
+            elif self.optimization == 'soft':
+                cmd.append('-O1')
+            if self.debug:
+                cmd.append('-g')
+            cmd.append(f'-I{self.build_runtime}')
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=60)
+                print(f"Compiled {gc_c}")
+            except subprocess.CalledProcessError as e:
+                print(f"Compilation of ely_gc failed: {e.stderr}")
+                return False
+            except subprocess.TimeoutExpired:
+                print(f"Compilation of ely_gc timed out")
+                return False
+        else:
+            print(f"Warning: {gc_c} not found")
         
         # Компилируем collections.c
                 # Компилируем collections.c
@@ -320,6 +344,8 @@ class ProjectBuilder:
             cmd.append(str(runtime_obj))
         if collections_obj:
             cmd.append(str(collections_obj))
+        if gc_obj:          # <-- добавить эту строку
+            cmd.append(str(gc_obj))
 
         for mod_name in modules.keys():
             if sys.platform == 'win32':

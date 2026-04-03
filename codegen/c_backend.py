@@ -144,6 +144,15 @@ class CCodeGen:
         self.structs = set()
         self.struct_fields = {}
 
+        if not self.is_module:
+            has_main = any(isinstance(s, MethodDeclaration) and s.name == 'main' for s in program.statements)
+            if not has_main:
+                self.main_code.append("int main() {")
+                self.main_code.append("    gc_init();")
+                self.main_code.append("    if (_global_init) _global_init();")
+                self.main_code.append("    return 0;")
+                self.main_code.append("}")
+
         for stmt in program.statements:
             if isinstance(stmt, TypeAlias):
                 self.type_aliases[stmt.name] = stmt.target_type
@@ -161,6 +170,7 @@ class CCodeGen:
                 self.used_modules.append(stmt.module)
 
         self.code.append('#include "ely_runtime.h"\n')
+        self.code.append('#include "ely_gc.h"\n')
         for mod in self.used_modules:
             self.code.append(f'#include "{mod}.h"\n')
         self.code.append('\n')
@@ -325,10 +335,12 @@ class CCodeGen:
             return
         if node.type_params:
             return
+        
+        # Определяем func_name СРАЗУ в начале
+        func_name = node.name
         ret_type = self._type_to_c(node.return_type or 'void')
         params = [f"{self._type_to_c(p.type)} {p.name}" for p in node.parameters]
         param_str = ", ".join(params)
-        func_name = node.name
 
         old_main = self.main_code
         self.main_code = []
@@ -337,16 +349,27 @@ class CCodeGen:
         self.emit_to_main(f"{ret_type} {func_name}({param_str}) {{")
         self.indent += 1
         self.inside_func = True
-        self.func_name = node.name
+        self.func_name = func_name
 
+        # Добавляем GC инициализацию для main
         if func_name == 'main' and self.global_vars_to_init and not self.is_module:
             self.emit_to_main("_global_init();")
+            self.emit_to_main("gc_init();")  # Добавляем инициализацию GC
 
         self._push_scope()
         for p in node.parameters:
             self.var_types[p.name] = p.type
+        
+        # Регистрируем корни для локальных переменных
+        self._gen_gc_roots()
+        
         for stmt in node.body:
             self.gen_statement(stmt)
+
+        # Удаляем корни
+        if hasattr(self, 'current_roots'):
+            for name in self.current_roots:
+                self.emit_to_main(f"gc_remove_root((void**)&{name});")
 
         if ret_type != 'void':
             if not any(isinstance(s, (ReturnStatement, GivebackStatement)) for s in node.body):
@@ -644,7 +667,9 @@ class CCodeGen:
         if isinstance(node.target, MemberAccess):
             obj = self.gen_expression(node.target.object)
             value = self.gen_expression(node.value)
-            return f"ely_value_set_key({obj}, \"{node.target.member}\", {value})"
+            # Write barrier: parent = obj, field = &obj->member, new_val = value
+            self.emit_to_main(f"gc_write_barrier({obj}, (void**)&({obj}->{node.target.member}), {value});")
+            return f"{obj}->{node.target.member} = {value}"
         if isinstance(node.target, IndexExpression):
             target = self.gen_expression(node.target.target)
             index = self.gen_expression(node.target.index)
@@ -942,6 +967,18 @@ class CCodeGen:
         self.main_code = old_main
         self.specializations.append(spec_code)
         return spec_name
+
+    def _gen_gc_roots(self):
+        """Генерирует регистрацию корней для всех локальных переменных типа ely_value*"""
+        roots = []
+        for name, typ in self.var_types.items():
+            resolved = self._resolve_type_alias(typ)
+            ctype = self._type_to_c(resolved)
+            if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
+                roots.append(name)
+        self.current_roots = roots
+        for name in roots:
+            self.emit_to_main(f"gc_add_root((void**)&{name});")
 
     def error(self, message: str, node: Expression):
         print(f"Code generation error: {message} at line {node.line}, col {node.col}")

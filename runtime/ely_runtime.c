@@ -6,6 +6,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include "ely_gc.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -98,7 +99,7 @@ ely_str ely_input(void) {
     if (fgets(buffer, sizeof(buffer), stdin)) {
         size_t len = strlen(buffer);
         if (len && buffer[len-1] == '\n') buffer[len-1] = '\0';
-        char* res = ely_alloc(len + 1);
+        char* res = gc_alloc(len + 1, GC_OBJ_STRING);
         if (res) strcpy(res, buffer);
         return res;
     }
@@ -143,7 +144,7 @@ static ely_str _int_to_str(long long n) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%lld", n);
     if (len < 0) return NULL;
-    char* res = ely_alloc(len + 1);
+    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
@@ -151,7 +152,7 @@ static ely_str _uint_to_str(unsigned long long n) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%llu", n);
     if (len < 0) return NULL;
-    char* res = ely_alloc(len + 1);
+    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
@@ -163,7 +164,7 @@ ely_str ely_flt_to_str(ely_flt f) {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "%g", (double)f);
     if (len < 0) return NULL;
-    char* res = ely_alloc(len + 1);
+    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
@@ -171,13 +172,13 @@ ely_str ely_double_to_str(ely_double d) {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "%g", d);
     if (len < 0) return NULL;
-    char* res = ely_alloc(len + 1);
+    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
 ely_str ely_bool_to_str(ely_bool b) {
     char* s = b ? "true" : "false";
-    char* res = ely_alloc(strlen(s) + 1);
+    char* res = gc_alloc(strlen(s) + 1, GC_OBJ_STRING);
     if (res) strcpy(res, s);
     return res;
 }
@@ -186,7 +187,7 @@ ely_str ely_bool_to_str(ely_bool b) {
 size_t ely_str_len(ely_str str) { return str ? strlen(str) : 0; }
 ely_str ely_str_dup(ely_str str) {
     if (!str) return NULL;
-    char* dup = ely_alloc(strlen(str) + 1);
+    char* dup = gc_alloc(strlen(str) + 1, GC_OBJ_STRING);
     if (dup) strcpy(dup, str);
     return dup;
 }
@@ -194,7 +195,7 @@ ely_str ely_str_concat(ely_str a, ely_str b) {
     if (!a && !b) return NULL;
     size_t la = a ? strlen(a) : 0;
     size_t lb = b ? strlen(b) : 0;
-    char* res = ely_alloc(la + lb + 1);
+    char* res = gc_alloc(la + lb + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     if (la) memcpy(res, a, la);
     if (lb) memcpy(res + la, b, lb);
@@ -212,7 +213,7 @@ ely_str ely_str_substr(ely_str str, size_t start, size_t len) {
     size_t slen = strlen(str);
     if (start >= slen) return ely_str_dup("");
     if (start + len > slen) len = slen - start;
-    char* res = ely_alloc(len + 1);
+    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     memcpy(res, str + start, len);
     res[len] = '\0';
@@ -223,7 +224,7 @@ ely_str ely_str_trim(ely_str str) {
     while (*str && (*str == ' ' || *str == '\t' || *str == '\n')) str++;
     size_t len = strlen(str);
     while (len > 0 && (str[len-1] == ' ' || str[len-1] == '\t' || str[len-1] == '\n')) len--;
-    char* res = ely_alloc(len + 1);
+    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     memcpy(res, str, len);
     res[len] = '\0';
@@ -239,7 +240,7 @@ ely_str ely_str_replace(ely_str str, ely_str old, ely_str new) {
     while ((pos = strstr(pos, old))) { count++; pos += old_len; }
     if (count == 0) return ely_str_dup(str);
     size_t result_len = strlen(str) + count * (new_len - old_len);
-    char* res = ely_alloc(result_len + 1);
+    char* res = gc_alloc(result_len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     char* out = res;
     pos = str;
@@ -309,7 +310,7 @@ typedef struct ely_file {
 ely_file* ely_file_open(char* path, char* mode) {
     FILE* fp = fopen(path, mode);
     if (!fp) return NULL;
-    ely_file* f = ely_alloc(sizeof(ely_file));
+    ely_file* f = gc_alloc(sizeof(ely_file), GC_OBJ_STRING);
     if (!f) { fclose(fp); return NULL; }
     f->fp = fp;
     return f;
@@ -317,7 +318,6 @@ ely_file* ely_file_open(char* path, char* mode) {
 void ely_file_close(ely_file* f) {
     if (f) {
         if (f->fp) fclose(f->fp);
-        ely_free(f);
     }
 }
 int ely_file_write(ely_file* f, char* data, size_t len) {
@@ -380,7 +380,7 @@ ely_str ely_path_join(ely_str a, ely_str b) {
     if (!b) return ely_str_dup(a);
     size_t la = strlen(a);
     size_t lb = strlen(b);
-    char* res = ely_alloc(la + lb + 2);
+    char* res = gc_alloc(la + lb + 2, GC_OBJ_STRING);
     if (!res) return NULL;
     strcpy(res, a);
     if (la > 0 && res[la-1] != '/' && res[la-1] != '\\')
@@ -402,7 +402,7 @@ ely_str ely_path_dirname(ely_str path) {
     if (!sep) return ely_str_dup(".");
     size_t len = sep - path;
     if (len == 0) return ely_str_dup(".");
-    char* res = ely_alloc(len + 1);
+    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     memcpy(res, path, len);
     res[len] = '\0';
@@ -463,14 +463,13 @@ char* ely_call_str_void(void* func) {
 }
 
 // ------------------------ Память ------------------------
-void* ely_alloc(size_t size) { return malloc(size); }
-void ely_free(void* ptr) { free(ptr); }
+// теперь за это отвечает GC
 
 // ------------------------ JSON сериализация (внутренние статические функции) ------------------------
 static char* _jsonify_string(const char* s) {
     if (!s) return ely_str_dup("null");
     size_t len = strlen(s);
-    char* out = ely_alloc(len * 2 + 3);
+    char* out = gc_alloc(len * 2 + 3, GC_OBJ_STRING);
     char* p = out;
     *p++ = '"';
     for (size_t i = 0; i < len; i++) {
@@ -494,7 +493,6 @@ static char* _jsonify_string(const char* s) {
     *p++ = '"';
     *p = '\0';
     char* result = ely_str_dup(out);
-    ely_free(out);
     return result;
 }
 
@@ -506,7 +504,6 @@ static char* array_to_json(arr* a) {
         ely_value* elem = arr_get(a, i);
         char* elem_json = ely_value_to_json(elem);
         result = ely_str_concat(result, elem_json);
-        ely_free(elem_json);
     }
     result = ely_str_concat(result, "]");
     return result;
@@ -540,8 +537,6 @@ static char* dict_to_json(dict* d) {
             result = ely_str_concat(result, key_json);
             result = ely_str_concat(result, ":");
             result = ely_str_concat(result, val_json);
-            ely_free(key_json);
-            ely_free(val_json);
             e = e->next;
         }
     }
@@ -609,7 +604,7 @@ static char* parse_string(json_parser* p) {
     size_t end = p->pos;
     consume(p, '"');
     size_t len = end - start;
-    char* buf = ely_alloc(len + 1);
+    char* buf = gc_alloc(len + 1, GC_OBJ_STRING);
     if (!buf) return NULL;
     memcpy(buf, p->str + start, len);
     buf[len] = '\0';
@@ -619,7 +614,7 @@ static char* parse_number(json_parser* p) {
     char* start = p->str + p->pos;
     while (p->pos < p->len && (isdigit(p->str[p->pos]) || p->str[p->pos] == '.' || p->str[p->pos] == '-' || p->str[p->pos] == 'e' || p->str[p->pos] == 'E')) p->pos++;
     size_t len = p->pos - (start - p->str);
-    char* buf = ely_alloc(len + 1);
+    char* buf = gc_alloc(len + 1, GC_OBJ_STRING);
     if (!buf) return NULL;
     memcpy(buf, start, len);
     buf[len] = '\0';
@@ -661,15 +656,14 @@ dict* ely_dictify(char* json_str) {
         char* key = parse_string(&parser);
         if (!key) { dict_free(d); return NULL; }
         skip_whitespace(&parser);
-        if (!consume(&parser, ':')) { ely_free(key); dict_free(d); return NULL; }
+        if (!consume(&parser, ':')) { dict_free(d); return NULL; }
         char* value = parse_value(&parser);
-        if (!value) { ely_free(key); dict_free(d); return NULL; }
+        if (!value) { dict_free(d); return NULL; }
         // value is a JSON string, but we need to store as ely_value*
         // For simplicity, we store the raw JSON string; in real implementation you'd parse recursively.
         // Here we just store the string as a value.
         ely_value* val = ely_value_new_string(value);
         dict_set_str(d, key, val);
-        ely_free(key);
         skip_whitespace(&parser);
         if (peek(&parser) == ',') consume(&parser, ',');
         else if (peek(&parser) == '}') continue;
@@ -717,12 +711,11 @@ static dict* parse_object(json_parser* p) {
         char* key = parse_string(p);
         if (!key) { dict_free(d); return NULL; }
         skip_whitespace(p);
-        if (!consume(p, ':')) { ely_free(key); dict_free(d); return NULL; }
+        if (!consume(p, ':')) { dict_free(d); return NULL; }
         char* value = parse_value(p);
-        if (!value) { ely_free(key); dict_free(d); return NULL; }
+        if (!value) { dict_free(d); return NULL; }
         ely_value* val = ely_value_new_string(value);
         dict_set_str(d, key, val);
-        ely_free(key);
         skip_whitespace(p);
         if (peek(p) == ',') consume(p, ',');
         else if (peek(p) == '}') continue;
@@ -754,48 +747,48 @@ static arr* parse_array(json_parser* p) {
 
 // ------------------------ ely_value implementation ------------------------
 ely_value* ely_value_new_null(void) {
-    ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
+    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_NULL;
     return v;
 }
 ely_value* ely_value_new_bool(int b) {
-    ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
+    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_BOOL;
     v->u.bool_val = b;
     return v;
 }
 ely_value* ely_value_new_int(long long i) {
-    ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
+    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_INT;
     v->u.int_val = i;
     return v;
 }
 ely_value* ely_value_new_double(double d) {
-    ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
+    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_DOUBLE;
     v->u.double_val = d;
     return v;
 }
 ely_value* ely_value_new_string(char* s) {
-    ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
+    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_STRING;
     v->u.string_val = s ? ely_str_dup(s) : NULL;
     return v;
 }
 ely_value* ely_value_new_array(arr* a) {
-    ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
+    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_ARRAY;
     v->u.array_val = a;
     return v;
 }
 ely_value* ely_value_new_object(dict* d) {
-    ely_value* v = (ely_value*)ely_alloc(sizeof(ely_value));
+    ely_value* v = (ely_value*)gc_alloc(sizeof(ely_value), GC_OBJ_VALUE);
     if (!v) return NULL;
     v->type = ely_VALUE_OBJECT;
     v->u.object_val = d;
@@ -804,12 +797,11 @@ ely_value* ely_value_new_object(dict* d) {
 void ely_value_free(ely_value* v) {
     if (!v) return;
     switch (v->type) {
-        case ely_VALUE_STRING: if (v->u.string_val) ely_free(v->u.string_val); break;
+        case ely_VALUE_STRING: if (v->u.string_val) break;
         case ely_VALUE_ARRAY: if (v->u.array_val) arr_free(v->u.array_val); break;
         case ely_VALUE_OBJECT: if (v->u.object_val) dict_free(v->u.object_val); break;
         default: break;
     }
-    ely_free(v);
 }
 
 ely_value* ely_value_from_json(char* json, size_t* pos) {
@@ -896,16 +888,12 @@ ely_value* ely_value_add(ely_value* a, ely_value* b) {
         char* a_str = (a->type == ely_VALUE_STRING) ? ely_str_dup(a->u.string_val) : ely_value_to_string(a);
         char* b_str = (b->type == ely_VALUE_STRING) ? ely_str_dup(b->u.string_val) : ely_value_to_string(b);
         char* result = ely_str_concat(a_str, b_str);
-        ely_free(a_str);
-        ely_free(b_str);
         return ely_value_new_string(result);
     }
     // По умолчанию – конвертируем в JSON и конкатенируем
     char* a_str = ely_value_to_json(a);
     char* b_str = ely_value_to_json(b);
     char* s = ely_str_concat(a_str, b_str);
-    ely_free(a_str);
-    ely_free(b_str);
     return ely_value_new_string(s);
 }
 
