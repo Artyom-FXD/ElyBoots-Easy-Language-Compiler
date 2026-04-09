@@ -329,6 +329,13 @@ class CCodeGen:
             self.emit_to_main(f"{ctype} {node.name};")
         self.var_types[node.name] = node.type
         self.var_types[node.name] = resolved_type
+        
+        # Регистрируем корень, если переменная - указатель на ely_value
+        if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
+            self.emit_to_main(f"gc_add_root((void**)&{node.name});")
+            if not hasattr(self, 'roots_to_remove'):
+                self.roots_to_remove = []
+            self.roots_to_remove.append(node.name)
 
     def _gen_function(self, node: MethodDeclaration):
         if node.name == '_global_init':
@@ -336,7 +343,6 @@ class CCodeGen:
         if node.type_params:
             return
         
-        # Определяем func_name СРАЗУ в начале
         func_name = node.name
         ret_type = self._type_to_c(node.return_type or 'void')
         params = [f"{self._type_to_c(p.type)} {p.name}" for p in node.parameters]
@@ -351,34 +357,45 @@ class CCodeGen:
         self.inside_func = True
         self.func_name = func_name
 
-        # Добавляем GC инициализацию для main
+        # GC инициализация для main
+        if func_name == 'main':
+            self.emit_to_main("gc_init();")
+        
         if func_name == 'main' and self.global_vars_to_init and not self.is_module:
             self.emit_to_main("_global_init();")
-            self.emit_to_main("gc_init();")  # Добавляем инициализацию GC
 
         self._push_scope()
+        
+        # Добавляем параметры в область видимости и регистрируем их как корни
         for p in node.parameters:
             self.var_types[p.name] = p.type
+            ctype = self._type_to_c(p.type)
+            if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
+                self.emit_to_main(f"gc_add_root((void**)&{p.name});")
+                if not hasattr(self, 'roots_to_remove'):
+                    self.roots_to_remove = []
+                self.roots_to_remove.append(p.name)
         
-        # Регистрируем корни для локальных переменных
-        self._gen_gc_roots()
-        
+        # Генерируем тело функции
         for stmt in node.body:
             self.gen_statement(stmt)
 
-        # Удаляем корни
-        if hasattr(self, 'current_roots'):
-            for name in self.current_roots:
+        # Удаляем все зарегистрированные корни в этой функции
+        if hasattr(self, 'roots_to_remove'):
+            for name in self.roots_to_remove:
                 self.emit_to_main(f"gc_remove_root((void**)&{name});")
+            self.roots_to_remove = []
 
         if ret_type != 'void':
-            if not any(isinstance(s, (ReturnStatement, GivebackStatement)) for s in node.body):
+            has_return = any(isinstance(s, (ReturnStatement, GivebackStatement)) for s in node.body)
+            if not has_return:
                 if ret_type in ('int', 'unsigned int', 'long long'):
                     self.emit_to_main("return 0;")
                 elif ret_type in ('float', 'double'):
                     self.emit_to_main("return 0.0;")
                 else:
                     self.emit_to_main("return NULL;")
+        
         self._pop_scope()
         self.indent -= 1
         self.emit_to_main("}")
@@ -456,6 +473,12 @@ class CCodeGen:
                 decl_type = node.item_decl.type or 'any'
                 c_decl_type = self._type_to_c(decl_type)
                 self.emit_to_main(f"{c_decl_type} {node.item_decl.name} = {elem_code};")
+                self.var_types[node.item_decl.name] = decl_type
+                if c_decl_type == 'ely_value*' or c_decl_type.startswith('ely_value*'):
+                    self.emit_to_main(f"gc_add_root((void**)&{node.item_decl.name});")
+                    if not hasattr(self, 'roots_to_remove'):
+                        self.roots_to_remove = []
+                    self.roots_to_remove.append(node.item_decl.name)
                 self.var_types[node.item_decl.name] = decl_type
             else:
                 self.emit_to_main(f"ely_value* {node.item_decl.name} = {elem_code};")
@@ -686,14 +709,25 @@ class CCodeGen:
         return f"((ely_value_as_bool({cond})) ? {then_expr} : {else_expr})"
 
     def _gen_fstring(self, node: FString) -> str:
-        result = 'ely_str_dup("")'
+        # Строим выражение как цепочку ely_value_add
+        if not node.parts:
+            return 'ely_value_new_string("")'
+        
+        # Накапливаем результат
+        result = None
         for part in node.parts:
             if isinstance(part, str):
-                escaped = part.replace('"', '\\"')
-                result = f'ely_str_concat({result}, "{escaped}")'
+                # Строковая часть превращается в ely_value_new_string
+                escaped = part.replace('"', '\\"').replace('\n', '\\n')
+                part_expr = f'ely_value_new_string("{escaped}")'
             else:
-                expr_code = self.gen_expression(part)
-                result = f'ely_str_concat({result}, ely_value_to_json({expr_code}))'
+                # Выражение
+                part_expr = self.gen_expression(part)
+            
+            if result is None:
+                result = part_expr
+            else:
+                result = f'ely_value_add({result}, {part_expr})'
         return result
 
     def _gen_array_literal(self, node: ArrayLiteral) -> str:
@@ -974,6 +1008,7 @@ class CCodeGen:
         for name, typ in self.var_types.items():
             resolved = self._resolve_type_alias(typ)
             ctype = self._type_to_c(resolved)
+            # Проверяем, что тип является указателем на ely_value
             if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
                 roots.append(name)
         self.current_roots = roots

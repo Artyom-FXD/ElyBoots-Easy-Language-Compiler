@@ -344,7 +344,7 @@ class ProjectBuilder:
             cmd.append(str(runtime_obj))
         if collections_obj:
             cmd.append(str(collections_obj))
-        if gc_obj:          # <-- добавить эту строку
+        if gc_obj:
             cmd.append(str(gc_obj))
 
         for mod_name in modules.keys():

@@ -92,6 +92,17 @@ class Lexer:
 
             ch = self.source[self.pos]
 
+            # Проверка на многострочную f-строку f"""
+            if (ch == 'f' or ch == 'F') and self._peek(1) == '"' and self._peek(2) == '"' and self._peek(3) == '"':
+                self._advance()  # съедаем f
+                self._read_multiline_fstring()
+                continue
+
+            # Проверка на многострочную строку """
+            if ch == '"' and self._peek(1) == '"' and self._peek(2) == '"':
+                self._read_multiline_string()
+                continue
+
             if ch == 'f' or ch == 'F':
                 next_ch = self._peek(1)
                 if next_ch == '"' or next_ch == "'":
@@ -336,3 +347,90 @@ class Lexer:
         ch = self.source[self.pos]
         self._advance()
         self._add_token(TokenType.UNKNOWN, ch, self.line, start_col)
+
+    def _read_multiline_string(self):
+        start_col = self.col
+        start_pos = self.pos
+        # Пропускаем """
+        self._advance()
+        self._advance()
+        self._advance()
+
+        chars = []
+        escaped = False
+
+        while self.pos < len(self.source):
+            ch = self.source[self.pos]
+
+            if escaped:
+                if ch == 'n':
+                    chars.append('\n')
+                elif ch == 't':
+                    chars.append('\t')
+                elif ch == 'r':
+                    chars.append('\r')
+                elif ch == '"':
+                    chars.append('"')
+                elif ch == '\\':
+                    chars.append('\\')
+                else:
+                    chars.append('\\' + ch)
+                escaped = False
+                self._advance()
+                continue
+
+            if ch == '\\':
+                escaped = True
+                self._advance()
+                continue
+
+            if ch == '"' and self.pos + 2 < len(self.source) and self.source[self.pos+1] == '"' and self.source[self.pos+2] == '"':
+                self._advance()
+                self._advance()
+                self._advance()
+                break
+
+            chars.append(ch)
+            self._advance()
+        else:
+            self._error("Unclosed multiline string")
+            return
+
+        raw_lexeme = self.source[start_pos:self.pos]
+        value = ''.join(chars)
+        self._add_token(TokenType.MULTILINE_STRING, raw_lexeme, self.line, start_col, value)
+
+    def _read_multiline_fstring(self):
+        start_col = self.col
+        start_pos = self.pos
+        # Пропускаем f"""
+        self._advance()  # f
+        self._advance()  # "
+        self._advance()  # "
+        self._advance()  # "
+
+        # Найдём позицию закрывающих """
+        end_pos = self.pos
+        depth = 0
+        while end_pos < len(self.source):
+            ch = self.source[end_pos]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+            elif ch == '"' and end_pos + 2 < len(self.source) and self.source[end_pos+1] == '"' and self.source[end_pos+2] == '"' and depth == 0:
+                break
+            end_pos += 1
+        else:
+            self._error("Unclosed multiline f-string")
+            return
+
+        content = self.source[self.pos:end_pos]
+        # Перемещаем позицию на закрывающие """
+        self.pos = end_pos
+        self._advance()
+        self._advance()
+        self._advance()
+
+        raw_lexeme = self.source[start_pos:self.pos]
+        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, self.line, start_col, content)

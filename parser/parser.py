@@ -963,6 +963,19 @@ class Parser:
             self._advance()
             parts = self._parse_fstring_parts(value)
             return FString(line=line, col=col, parts=parts)
+        if self._check(TokenType.FSTRING_MULTILINE):
+            line = self.current_token.line
+            col = self.current_token.col
+            content = self.current_token.value  # содержимое между кавычками
+            self._advance()
+            parts = self._parse_fstring_parts(content)
+            return FString(line=line, col=col, parts=parts)
+        if self._check(TokenType.MULTILINE_STRING):
+            val = self.current_token.value
+            line = self.current_token.line
+            col = self.current_token.col
+            self._advance()
+            return Literal(line=line, col=col, value=val)
         if self._check(TokenType.NULL):
             line = self.current_token.line
             col = self.current_token.col

@@ -6,7 +6,6 @@
 #include <time.h>
 #include <stdarg.h>
 #include <ctype.h>
-#include "ely_gc.h"
 
 #ifdef _WIN32
 #include <windows.h>

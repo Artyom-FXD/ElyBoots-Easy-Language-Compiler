@@ -47,6 +47,9 @@ class TokenType(Enum):
     BYTE = 'byte'
     UBYTE = 'ubyte'
     ANY = 'any'
+    FSTRING = 'fstring'
+    MULTILINE_STRING = 'multiline_string'
+    FSTRING_MULTILINE = 'fstring_multiline'
 
     # Циклы
     FOR = 'for'
@@ -113,7 +116,6 @@ class TokenType(Enum):
     TYPEOF = 'typeof'
     AS = 'as'
 
-    FSTRING = 'fstring'
 
     # Новые ключевые слова
     ARRAY = 'arr'

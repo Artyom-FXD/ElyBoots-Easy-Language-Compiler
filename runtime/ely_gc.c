@@ -24,6 +24,8 @@ static char* old_limit = NULL;
 static gc_header_t* all_objects = NULL;
 static gc_header_t* old_objects = NULL;
 
+static int gc_initialized = 0;
+
 static void*** roots = NULL;
 static int roots_count = 0;
 static int roots_capacity = 0;
