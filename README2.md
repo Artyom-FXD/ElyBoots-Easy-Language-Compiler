@@ -1,5 +1,7 @@
 # ely Language
 
+<a href="https://artyom-fxd.github.io/ElyBoots-Easy-Language-Compiler/">Site</a>
+
 **ely Language** — статически типизированный компилируемый язык программирования с быстрой компиляцией, встроенными коллекциями, дженериками и удобным синтаксисом.
 
 - Молниеносная компиляция (TCC)

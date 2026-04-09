@@ -1,5 +1,7 @@
 # ely Language
 
+<a href="https://artyom-fxd.github.io/ElyBoots-Easy-Language-Compiler/">Site</a>
+
 **ely Language** — a statically typed, compiled programming language with fast compilation, built-in collections, generics, and convenient syntax.
 
 - Lightning-fast compilation (TCC)
