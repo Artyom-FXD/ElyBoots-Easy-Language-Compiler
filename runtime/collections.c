@@ -26,8 +26,12 @@ void arr_free(arr* a) {
 
 static void arr_reserve(arr* a, size_t new_cap) {
     if (new_cap <= a->capacity) return;
-    ely_value** new_data = (ely_value**)realloc(a->data, new_cap * sizeof(ely_value*));
+    ely_value** new_data = (ely_value**)gc_alloc(new_cap * sizeof(ely_value*), GC_OBJ_ARR);
     if (!new_data) return;
+    if (a->data) {
+        memcpy(new_data, a->data, a->size * sizeof(ely_value*));
+        // старый a->data не освобождаем
+    }
     a->data = new_data;
     a->capacity = new_cap;
 }
@@ -145,7 +149,8 @@ dict* dict_new(unsigned int (*hash)(ely_value*), int (*key_cmp)(ely_value*, ely_
     if (!d) return NULL;
     d->capacity = 16;
     d->buckets = (dict_entry**)gc_alloc(d->capacity * sizeof(dict_entry*), GC_OBJ_DICT);
-    if (!d->buckets) { free(d); return NULL; }
+    if (!d->buckets) { /* error */ return NULL; }
+    memset(d->buckets, 0, d->capacity * sizeof(dict_entry*));
     d->size = 0;
     d->hash = hash ? hash : default_hash;
     d->key_cmp = key_cmp ? key_cmp : default_cmp;

@@ -371,10 +371,11 @@ class CCodeGen:
             self.var_types[p.name] = p.type
             ctype = self._type_to_c(p.type)
             if ctype == 'ely_value*' or ctype.startswith('ely_value*'):
-                self.emit_to_main(f"gc_add_root((void**)&{p.name});")
+                self.emit_to_main(f"gc_add_root((void**)&{node.name});")
+                # Сохранить для удаления в конце функции
                 if not hasattr(self, 'roots_to_remove'):
                     self.roots_to_remove = []
-                self.roots_to_remove.append(p.name)
+                self.roots_to_remove.append(node.name)
         
         # Генерируем тело функции
         for stmt in node.body:
@@ -385,6 +386,9 @@ class CCodeGen:
             for name in self.roots_to_remove:
                 self.emit_to_main(f"gc_remove_root((void**)&{name});")
             self.roots_to_remove = []
+
+        for name in self.roots_to_remove:
+            self.emit_to_main(f"gc_remove_root((void**)&{name});")
 
         if ret_type != 'void':
             has_return = any(isinstance(s, (ReturnStatement, GivebackStatement)) for s in node.body)

@@ -185,10 +185,7 @@ ely_str ely_bool_to_str(ely_bool b) {
 // ------------------------ Строки ------------------------
 size_t ely_str_len(ely_str str) { return str ? strlen(str) : 0; }
 ely_str ely_str_dup(ely_str str) {
-    if (!str) return NULL;
-    char* dup = gc_alloc(strlen(str) + 1, GC_OBJ_STRING);
-    if (dup) strcpy(dup, str);
-    return dup;
+    return gc_strdup(str);
 }
 ely_str ely_str_concat(ely_str a, ely_str b) {
     if (!a && !b) return NULL;
@@ -839,6 +836,7 @@ ely_value* ely_value_get_key(ely_value* v, char* key) {
 void ely_value_set_key(ely_value* v, char* key, ely_value* value) {
     if (!v || v->type != ely_VALUE_OBJECT) return;
     dict* d = v->u.object_val;
+    gc_write_barrier(v, (void**)&d, value); // упрощённо
     dict_set_str(d, key, value);
 }
 
