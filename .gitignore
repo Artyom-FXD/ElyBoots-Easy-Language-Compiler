@@ -4,6 +4,9 @@ ex_prj/*
 # TCC (will be included in releases)
 tools/tcc/*
 
+# CONFIG
+ely.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

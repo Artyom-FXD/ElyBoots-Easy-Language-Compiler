@@ -1,15 +1,3 @@
-/**
- * @file gc_new.h
- * @brief Новый поколенческий сборщик мусора для языка Ely.
- * 
- * Реализует двухпоколенческую систему с копирующим сборщиком для молодого поколения
- * и mark‑sweep‑compact для старого. Поддерживает регистрацию корней, барьеры записи,
- * крупные объекты и масштабируемость.
- * 
- * @version 2.0.0
- * @date 2026-04-11
- */
-
 #ifndef ELY_GC_NEW_H
 #define ELY_GC_NEW_H
 
@@ -25,15 +13,17 @@ extern "C" {
  * Конфигурационные параметры (могут быть переопределены при компиляции)
  * ============================================================================ */
 
-#ifndef YOUNG_SIZE
-/** Размер одного полупространства молодого поколения (байт). */
-#define YOUNG_SIZE (2 * 1024 * 1024)   /* 2 MB */
+/* Размеры поколений в мегабайтах (могут быть переопределены при компиляции) */
+#ifndef GC_YOUNG_SIZE_MB
+#define GC_YOUNG_SIZE_MB 16
 #endif
 
-#ifndef OLD_INITIAL_SIZE
-/** Начальный размер старого поколения (байт). */
-#define OLD_INITIAL_SIZE (8 * 1024 * 1024)  /* 8 MB */
+#ifndef GC_OLD_INITIAL_SIZE_MB
+#define GC_OLD_INITIAL_SIZE_MB 8
 #endif
+
+#define YOUNG_SIZE (GC_YOUNG_SIZE_MB * 1024 * 1024)
+#define OLD_INITIAL_SIZE (GC_OLD_INITIAL_SIZE_MB * 1024 * 1024)
 
 #ifndef OLD_MAX_SIZE
 /** Максимальный размер старого поколения (0 = без ограничений). */
@@ -135,6 +125,8 @@ void gc_shutdown(void);
  * @return Указатель на начало пользовательских данных или NULL при ошибке.
  */
 void* gc_alloc(size_t size, gc_obj_type_t type);
+
+static bool is_gc_managed(void* ptr);
 
 /**
  * @brief Выделяет блок памяти под управлением GC с инициализацией нулями.
@@ -315,7 +307,7 @@ void gc_set_old_threshold(int percent);
 #define GC_BARRIER(parent, field, new_val) \
     gc_write_barrier((parent), (void**)&(field), (new_val))
 
-static char* gc_strdup(const char* s);
+char* gc_strdup(const char* s);
 
 #ifdef __cplusplus
 }

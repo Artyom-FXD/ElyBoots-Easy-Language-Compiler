@@ -1,4 +1,3 @@
-# builder.py
 import json
 import subprocess
 import shutil
@@ -11,40 +10,90 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lexer_module import Lexer
 from parser import *
 from codegen.c_backend import CCodeGen
-from config_manager import ConfigManager
 
+
+# builder.py (фрагмент)
 
 class ProjectBuilder:
-    def __init__(self, config_path: Path, compiler_path: Optional[str] = None):
+    def __init__(self, config_path: Path, compiler_path: Optional[str] = None,
+                young_mb: Optional[int] = None, old_mb: Optional[int] = None):
         self.config_path = Path(config_path).resolve()
         self.project_root = self.config_path.parent
         with open(self.config_path, 'r', encoding='utf-8') as f:
             self.config = json.load(f)
-        self.optimization = 'hard'
-        self.debug = False
-        self.target = None
-        self.output_name = None
-        self.compiler_path = compiler_path
-        if not self.compiler_path:
-            # Пытаемся прочитать из .ely_config
-            config_file = self.project_root / '.ely_config'
-            if config_file.exists():
-                with open(config_file) as f:
-                    config = json.load(f)
-                    self.compiler_path = config.get('compiler_path')
 
-        # Директории
+        # Загружаем настройки (compiler и gc)
+        self._load_compiler_config(compiler_path, young_mb, old_mb)
+
         self.build_dir = self.project_root / 'build'
         self.libs_dir = self.project_root / 'libs'
         self.output_dir = self.project_root / 'output'
-
-        # Путь к runtime в компиляторе
         self.compiler_runtime = Path(__file__).parent.parent / 'runtime'
-        self.config_mgr = ConfigManager(self.project_root)
-        # Приоритет: аргумент командной строки > локальный конфиг > глобальный конфиг
-        self.compiler_path = compiler_path or self.config_mgr.get('compiler.path')
-        self.optimization = self.config_mgr.get('compiler.optimization', 'hard')
-        self.debug = self.config_mgr.get('compiler.debug', False)
+
+    def _load_compiler_config(self, compiler_path: Optional[str] = None,
+                              young_mb: Optional[int] = None,
+                              old_mb: Optional[int] = None):
+        """
+        Приоритет: аргументы > глобальный ely.json > пользовательский ~/.ely/ely.json
+        """
+        self.compiler_path = compiler_path
+        self.optimization = 'hard'
+        self.debug = False
+        self.gc_young_mb = 16
+        self.gc_old_mb = 8
+
+        def extract_compiler_path(data: dict) -> Optional[str]:
+            if 'compiler_path' in data:
+                return data['compiler_path']
+            if 'compiler' in data and isinstance(data['compiler'], dict):
+                return data['compiler'].get('path')
+            return None
+
+        base_dir = Path(__file__).parent.parent
+        global_config = base_dir / 'ely.json'
+
+        if global_config.exists():
+            try:
+                with open(global_config, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if not self.compiler_path:
+                    path = extract_compiler_path(data)
+                    if path:
+                        self.compiler_path = path
+                self.optimization = data.get('optimization', self.optimization)
+                self.debug = data.get('debug', self.debug)
+                if 'gc' in data:
+                    self.gc_young_mb = data['gc'].get('young_size_mb', self.gc_young_mb)
+                    self.gc_old_mb = data['gc'].get('old_initial_size_mb', self.gc_old_mb)
+            except Exception as e:
+                print(f"Warning: failed to read {global_config}: {e}")
+
+        user_config = Path.home() / '.ely' / 'ely.json'
+        if user_config.exists():
+            try:
+                with open(user_config, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if not self.compiler_path:
+                    path = extract_compiler_path(data)
+                    if path:
+                        self.compiler_path = path
+                if 'optimization' in data and self.optimization == 'hard':
+                    self.optimization = data['optimization']
+                if 'debug' in data and not self.debug:
+                    self.debug = data['debug']
+                if 'gc' in data:
+                    if self.gc_young_mb == 16:
+                        self.gc_young_mb = data['gc'].get('young_size_mb', self.gc_young_mb)
+                    if self.gc_old_mb == 8:
+                        self.gc_old_mb = data['gc'].get('old_initial_size_mb', self.gc_old_mb)
+            except Exception as e:
+                print(f"Warning: failed to read {user_config}: {e}")
+
+        # Аргументы командной строки имеют высший приоритет
+        if young_mb is not None:
+            self.gc_young_mb = young_mb
+        if old_mb is not None:
+            self.gc_old_mb = old_mb
 
     def _prepare_runtime(self) -> bool:
         self.build_runtime = self.build_dir / 'runtime'
@@ -58,7 +107,7 @@ class ProjectBuilder:
             return False
 
     def _find_compiler(self):
-        # 1. Явно указанный пользователем путь
+        # 1. Явно указанный путь (из аргумента или конфига)
         if self.compiler_path:
             path = Path(self.compiler_path)
             if path.exists() and path.is_file():
@@ -284,7 +333,7 @@ class ProjectBuilder:
         except subprocess.TimeoutExpired:
             print(f"Compilation of main project timed out")
             return False
-
+        
         runtime_c = self.build_runtime / 'ely_runtime.c'
         runtime_obj = None
         if runtime_c.exists():
@@ -305,7 +354,6 @@ class ProjectBuilder:
             except subprocess.TimeoutExpired:
                 print(f"Compilation of runtime timed out")
                 return False
-        # Компилируем ely_gc.c
         gc_c = self.build_runtime / 'ely_gc.c'
         gc_obj = None
         if gc_c.exists():
@@ -317,10 +365,13 @@ class ProjectBuilder:
                 cmd.append('-O1')
             if self.debug:
                 cmd.append('-g')
+            # Передаём размеры поколений через макросы
+            cmd.append(f'-DGC_YOUNG_SIZE_MB={self.gc_young_mb}')
+            cmd.append(f'-DGC_OLD_INITIAL_SIZE_MB={self.gc_old_mb}')
             cmd.append(f'-I{self.build_runtime}')
             try:
                 subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=60)
-                print(f"Compiled {gc_c}")
+                print(f"Compiled {gc_c} with young={self.gc_young_mb}MB, old={self.gc_old_mb}MB")
             except subprocess.CalledProcessError as e:
                 print(f"Compilation of ely_gc failed: {e.stderr}")
                 return False
@@ -329,9 +380,6 @@ class ProjectBuilder:
                 return False
         else:
             print(f"Warning: {gc_c} not found")
-        
-        # Компилируем collections.c
-                # Компилируем collections.c
         collections_c = self.build_runtime / 'collections.c'
         collections_obj = None
         if collections_c.exists():

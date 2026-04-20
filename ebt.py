@@ -21,6 +21,8 @@ def main():
     build_parser.add_argument('--debug', action='store_true')
     build_parser.add_argument('--target', help='Target triple')
     build_parser.add_argument('--compiler', help='Path to C compiler executable')
+    build_parser.add_argument('--young-mb', type=int, help='Young generation size in MB')
+    build_parser.add_argument('--old-mb', type=int, help='Old generation initial size in MB')
 
     # build-module
     mod_parser = subparsers.add_parser('build-module', help='Build a specific module')
@@ -105,7 +107,10 @@ def main():
 
 def build_command(args):
     from builder import ProjectBuilder
-    builder = ProjectBuilder(Path(args.file))
+    builder = ProjectBuilder(Path(args.file),
+                            compiler_path=args.compiler,
+                            young_mb=args.young_mb,
+                            old_mb=args.old_mb)
     builder.optimization = args.optimize
     builder.debug = args.debug
     if args.target:
