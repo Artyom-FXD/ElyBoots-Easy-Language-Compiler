@@ -110,7 +110,8 @@ def build_command(args):
     builder = ProjectBuilder(Path(args.file),
                             compiler_path=args.compiler,
                             young_mb=args.young_mb,
-                            old_mb=args.old_mb)
+                            old_mb=args.old_mb,
+                            target=args.target)
     builder.optimization = args.optimize
     builder.debug = args.debug
     if args.target:

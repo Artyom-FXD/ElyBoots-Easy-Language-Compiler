@@ -16,9 +16,11 @@ from codegen.c_backend import CCodeGen
 
 class ProjectBuilder:
     def __init__(self, config_path: Path, compiler_path: Optional[str] = None,
-                young_mb: Optional[int] = None, old_mb: Optional[int] = None):
+                young_mb: Optional[int] = None, old_mb: Optional[int] = None,
+                target: Optional[str] = None):
         self.config_path = Path(config_path).resolve()
         self.project_root = self.config_path.parent
+        self.target = target
         with open(self.config_path, 'r', encoding='utf-8') as f:
             self.config = json.load(f)
 
@@ -107,6 +109,21 @@ class ProjectBuilder:
             return False
 
     def _find_compiler(self):
+        # 0. Если указана целевая тройка, ищем кросс-компилятор
+        if self.target:
+            # Пробуем префиксный gcc: <triple>-gcc
+            prefixed = f"{self.target}-gcc"
+            path = shutil.which(prefixed)
+            if path:
+                print(f"Found cross-compiler for {self.target}: {path}")
+                return prefixed, path
+            # Пробуем clang с явным -target
+            clang = shutil.which("clang")
+            if clang:
+                print(f"Using clang with -target {self.target}")
+                return 'clang', clang
+            print(f"Warning: cross-compiler for {self.target} not found. Falling back to default.")
+
         # 1. Явно указанный путь (из аргумента или конфига)
         if self.compiler_path:
             path = Path(self.compiler_path)
@@ -234,6 +251,10 @@ class ProjectBuilder:
             cmd.append('-O1')
         if self.debug:
             cmd.append('-g')
+        if compiler == 'clang' and self.target:
+            cmd.extend(['-target', self.target])
+        elif compiler == 'gcc' and self.target:
+            pass
         cmd.append(f'-I{self.build_runtime}')
         cmd.append(f'-I{self.build_dir}')
         if sys.platform == 'win32':
@@ -323,6 +344,10 @@ class ProjectBuilder:
             cmd.append('-O1')
         if self.debug:
             cmd.append('-g')
+        if compiler == 'clang' and self.target:
+            cmd.extend(['-target', self.target])
+        elif compiler == 'gcc' and self.target:
+            pass
         cmd.append(f'-I{self.build_runtime}')
         cmd.append(f'-I{self.build_dir}')
         try:
