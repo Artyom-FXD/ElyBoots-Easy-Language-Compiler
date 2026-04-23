@@ -1142,11 +1142,44 @@ class CCodeGen:
                 return ""
             return f"ely_value_new_double(ely_time_diff(ely_value_as_int({args[0]}), ely_value_as_int({args[1]})))"
 
+        if func_name == 'timeNowMs':
+            return 'ely_value_new_int(ely_time_now_ms())'
+
+        if func_name == 'formatTime':
+            if len(args) < 1:
+                self.error("formatTime expects at least 1 argument (seconds)", node)
+                return ""
+            if len(args) >= 2:
+                fmt_expr = f"ely_value_to_string({args[1]})"
+            else:
+                fmt_expr = '"%Y-%m-%d %H:%M:%S"'
+            return f"ely_value_new_string(ely_format_time(ely_value_as_int({args[0]}), {fmt_expr}))"
+
+        if func_name == 'parseTime':
+            if len(args) != 2:
+                self.error("parseTime expects 2 arguments (str, fmt)", node)
+                return ""
+            s = f"ely_value_to_string({args[0]})"
+            f = f"ely_value_to_string({args[1]})"
+            return f"ely_value_new_int(ely_parse_time({s}, {f}))"
+
         if func_name == 'sleep':
             if len(args) != 1:
                 self.error("sleep expects 1 argument", node)
                 return ""
             return f"(ely_sleep(ely_value_as_int({args[0]})), ely_value_new_null())"
+
+        if func_name == 'randInt':
+            return 'ely_value_new_int(ely_rand_int())'
+
+        if func_name == 'randIntRange':
+            if len(args) != 2:
+                self.error("randIntRange expects 2 arguments (min, max)", node)
+                return ""
+            return f"ely_value_new_int(ely_rand_int_range(ely_value_as_int({args[0]}), ely_value_as_int({args[1]})))"
+
+        if func_name == 'randBool':
+            return 'ely_value_new_bool(ely_rand_bool())'
 
         void_funcs = ['srand', 'fileClose', 'closeLibrary', 'del']
         if func_name in void_funcs:

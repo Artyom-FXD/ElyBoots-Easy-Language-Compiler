@@ -1460,3 +1460,78 @@ double ely_value_as_double(ely_value* v) {
         default:               return 0.0;
     }
 }
+
+// ------------------------ Расширенное время ------------------------
+#include <time.h>
+#ifndef _WIN32
+#include <sys/time.h>
+#else
+#include <windows.h>
+#endif
+
+long long ely_time_now_ms(void) {
+#ifdef _WIN32
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER uli;
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    const ULONGLONG EPOCH_DIFFERENCE = 116444736000000000ULL;
+    uli.QuadPart -= EPOCH_DIFFERENCE;
+    return (long long)(uli.QuadPart / 10000);
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+#endif
+}
+
+char* ely_format_time(long long seconds, const char* fmt) {
+    if (!fmt) fmt = "%Y-%m-%d %H:%M:%S";
+    time_t t = (time_t)seconds;
+    struct tm* tm_info = localtime(&t);
+    if (!tm_info) return gc_strdup("localtime error");
+    char buffer[256];
+    if (strftime(buffer, sizeof(buffer), fmt, tm_info) == 0) {
+        return gc_strdup("strftime error");
+    }
+    return gc_strdup(buffer);
+}
+
+long long ely_parse_time(const char* str, const char* fmt) {
+    if (!str || !fmt) return 0;
+    struct tm tm_info = {0};
+#ifdef _WIN32
+    if (strcmp(fmt, "%Y-%m-%d %H:%M:%S") == 0) {
+        int year, month, day, hour, min, sec;
+        if (sscanf(str, "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+            tm_info.tm_year = year - 1900;
+            tm_info.tm_mon  = month - 1;
+            tm_info.tm_mday = day;
+            tm_info.tm_hour = hour;
+            tm_info.tm_min  = min;
+            tm_info.tm_sec  = sec;
+            tm_info.tm_isdst = -1;
+            return (long long)mktime(&tm_info);
+        }
+    }
+    return 0;
+#else
+    if (strptime(str, fmt, &tm_info) == NULL) return 0;
+    return (long long)mktime(&tm_info);
+#endif
+}
+
+/* ------------------------ Случайные числа ------------------------ */
+ely_int ely_rand_int(void) {
+    return (ely_int)ely_rand();
+}
+
+ely_int ely_rand_int_range(ely_int min, ely_int max) {
+    if (min >= max) return min;
+    return min + (ely_rand() % (max - min + 1));
+}
+
+ely_bool ely_rand_bool(void) {
+    return (ely_rand() % 2) ? 1 : 0;
+}

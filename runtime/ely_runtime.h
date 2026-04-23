@@ -230,6 +230,16 @@ void ely_value_set_method(ely_value* obj, const char* name, void* func_ptr);
 long long ely_value_as_int(ely_value* v);
 double ely_value_as_double(ely_value* v);
 
+/* ------------------------ Расширенное время ------------------------ */
+long long ely_time_now_ms(void);
+char* ely_format_time(long long seconds, const char* fmt);
+long long ely_parse_time(const char* str, const char* fmt);
+
+/* ------------------------ Случайные числа ------------------------ */
+ely_int ely_rand_int(void);
+ely_int ely_rand_int_range(ely_int min, ely_int max);
+ely_bool ely_rand_bool(void);
+
 #ifdef __cplusplus
 }
 #endif
