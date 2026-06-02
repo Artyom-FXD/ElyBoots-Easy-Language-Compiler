@@ -258,6 +258,8 @@ void ely_value_set_method(ely_value* obj, const char* name, void* func_ptr);
 long long ely_value_as_int(ely_value* v);
 double ely_value_as_double(ely_value* v);
 
+void ely_chdir_to_exe_dir(void);
+
 /* ------------------------ Расширенное время ------------------------ */
 long long ely_time_now_ms(void);
 ely_value* ely_format_time(ely_value* seconds_val, ely_value* fmt_val);

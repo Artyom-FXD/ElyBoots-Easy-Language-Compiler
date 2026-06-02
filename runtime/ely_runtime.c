@@ -1566,3 +1566,28 @@ ely_value* ely_dyn_arr(ely_value* elem) {
     arr_push(a, elem);
     return ely_value_new_array(a);
 }
+
+void ely_chdir_to_exe_dir(void) {
+#ifdef _WIN32
+    char exe_path[4096];
+    DWORD len = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+    if (len > 0 && len < sizeof(exe_path)) {
+        char* last_slash = strrchr(exe_path, '\\');
+        if (last_slash) {
+            *last_slash = '\0';
+            SetCurrentDirectoryA(exe_path);
+        }
+    }
+#else
+    char exe_path[4096];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len > 0 && len < (ssize_t)sizeof(exe_path)) {
+        exe_path[len] = '\0';
+        char* last_slash = strrchr(exe_path, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            chdir(exe_path);
+        }
+    }
+#endif
+}

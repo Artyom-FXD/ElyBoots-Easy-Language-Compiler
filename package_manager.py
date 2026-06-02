@@ -17,6 +17,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# When frozen by PyInstaller, __file__ points to the temp extraction directory.
+# We need the directory of the actual .exe to find stdmodules/ and ebt.py.
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = Path(sys.executable).parent
+else:
+    _BASE_DIR = Path(__file__).parent
+
 
 class PackageManager:
     """
@@ -39,7 +46,7 @@ class PackageManager:
         """Find the stdmodules/ directory relative to the EasyBoots installation."""
         # This file is at EasyBoots/package_manager.py
         # stdmodules is at EasyBoots/stdmodules/
-        candidate = Path(__file__).parent / 'stdmodules'
+        candidate = _BASE_DIR / 'stdmodules'
         if candidate.is_dir():
             return candidate
         # Fallback: relative to cwd
@@ -48,6 +55,28 @@ class PackageManager:
             return candidate2
         # Last resort
         return candidate
+
+    @staticmethod
+    def resolve_manager_path(path_str: str | None) -> Optional[Path]:
+        """
+        Разрешает путь к manager.json из строки.
+        - None → ищет manager.json в CWD
+        - директория → ищет manager.json внутри
+        - файл .json → использует напрямую
+        Возвращает Path к manager.json или None.
+        """
+        if path_str:
+            p = Path(path_str)
+        else:
+            p = Path.cwd()
+        if p.is_dir():
+            manager = p / 'manager.json'
+            if manager.exists():
+                return manager.resolve()
+            return None
+        if p.suffix == '.json' and p.exists():
+            return p.resolve()
+        return None
 
     # ------------------------------------------------------------------
     # init
@@ -195,7 +224,7 @@ public int func hello() {
         manager_json = src / 'manager.json'
         if manager_json.exists():
             print(f"  Building module {module_name} from source ...")
-            ebt_path = Path(__file__).parent / 'ebt.py'
+            ebt_path = _BASE_DIR / 'ebt.py'
             result = subprocess.run(
                 [sys.executable, str(ebt_path), 'build', str(manager_json)],
                 capture_output=True, text=True, cwd=str(src)
@@ -549,27 +578,3 @@ public int func hello() {
                         'description': meta.get('description', '')
                     })
         return result
-
-    # ------------------------------------------------------------------
-    # Build helpers — used by elp build / elp run
-    # ------------------------------------------------------------------
-    def resolve_manager_path(self, path: Optional[str] = None) -> Optional[Path]:
-        """
-        Resolve manager.json path.
-
-        If path is given, resolve it (can be directory or file).
-        If path is None, look in cwd.
-        """
-        if path:
-            p = Path(path).resolve()
-            if p.is_dir():
-                p = p / 'manager.json'
-            if p.exists():
-                return p
-            return None
-        else:
-            # Try cwd/manager.json
-            p = Path.cwd() / 'manager.json'
-            if p.exists():
-                return p
-            return None

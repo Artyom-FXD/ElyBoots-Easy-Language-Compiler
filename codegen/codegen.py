@@ -226,12 +226,30 @@ class CppCodeGen(ClassCodeGen):
                             self.original_functions[full_name] = method
             elif isinstance(stmt, MethodDeclaration):
                 self.original_functions[stmt.name] = stmt
+                # Функции с пустым телом (из link.ely) — это extern-декларации
+                if not stmt.body or len(stmt.body) == 0:
+                    ext = ExternFunction(
+                        line=stmt.line, col=stmt.col,
+                        return_type=stmt.return_type or 'void',
+                        name=stmt.name,
+                        parameters=[Parameter(type=p.type, name=p.name) for p in stmt.parameters]
+                    )
+                    self.extern_functions[stmt.name] = ext
             elif isinstance(stmt, TypeAlias):
                 self.type_aliases[stmt.name] = stmt.target_type
             elif isinstance(stmt, ExternFunction):
                 self.extern_functions[stmt.name] = stmt
             elif isinstance(stmt, GlobalCBlock):
+                # C++ code (with #include, templates, etc.) must not be wrapped in extern "C"
+                is_cpp = any(line.strip().startswith('#') or '::' in line or '<' in line for line in stmt.code.split('\n'))
+                if not is_cpp:
+                    self.global_code.append('extern "C" {')
                 self.global_code.append(stmt.code)
+                if not is_cpp:
+                    self.global_code.append('}')
+                # Don't extract extern functions from C++ blocks (they have C++ linkage)
+                if is_cpp:
+                    continue
                 import re
                 # Pattern: C function declarations (not C++ code with ::, <, >, #)
                 pattern = re.compile(r'\b((?:unsigned\s+)?(?:long\s+)?(?:long\s+)?[a-zA-Z_]\w*[\s\*]+)([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*([{;])')
@@ -269,8 +287,6 @@ class CppCodeGen(ClassCodeGen):
                                 parameters.append(Parameter(type=param_type, name=param_name))
                             else:
                                 parameters.append(Parameter(type=param, name=''))
-                    proto = f"{ret_type} {func_name}({', '.join(f'{p.type} {p.name}' for p in parameters)});"
-                    self.global_code.append(proto)
                     self.extern_functions[func_name] = ExternFunction(
                         line=stmt.line, col=stmt.col,
                         return_type=ret_type,
@@ -300,7 +316,9 @@ class CppCodeGen(ClassCodeGen):
                 self.global_code.append(f"class {cls_name};")
             self.global_code.append('')
 
-            # --- Прототипы extern-функций (нативные типы) ---
+            # --- Прототипы extern-функций и глобальных функций (обёрнуты в extern "C" для ABI) ---
+            self.global_code.append('extern "C" {')
+
             for ext in self.extern_functions.values():
                 ret = ext.return_type or 'void'
                 if ret == 'any' or ret == 'object':
@@ -372,6 +390,7 @@ class CppCodeGen(ClassCodeGen):
                 param_str = ', '.join(params)
                 self.global_code.append(f"{ret_cpp} {name}({param_str});")
             self.global_code.append('')
+            self.global_code.append('}')  # конец extern "C"
 
             # Интерфейсы
             for iface in self.interfaces_ast.values():
@@ -391,9 +410,11 @@ class CppCodeGen(ClassCodeGen):
                 if isinstance(stmt, VariableDeclaration):
                     self._gen_global_variable(stmt)
 
-            # Глобальные функции (определения)
+            # Глобальные функции (определения) — пропускаем extern
             for stmt in program.statements:
                 if isinstance(stmt, MethodDeclaration) and stmt.name not in [c.name for c in self.classes_ast.values()]:
+                    if stmt.name in self.extern_functions:
+                        continue
                     self.current_class_name = None
                     self._gen_one_function(stmt)
 
@@ -415,6 +436,7 @@ class CppCodeGen(ClassCodeGen):
     }
     """)
             self.global_code.append("void _global_init() {")
+            self.global_code.append("    ely_chdir_to_exe_dir();")
             self.global_code.append("    // статические поля уже инициализированы")
             self.global_code.append("}")
 

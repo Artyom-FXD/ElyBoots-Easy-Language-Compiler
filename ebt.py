@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import sys
 import os
 import argparse
@@ -6,8 +5,29 @@ import json
 import shutil
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent
+def get_base_dir():
+    """Возвращает директорию, где лежат runtime/ и stdmodules/"""
+    
+    if getattr(sys, 'frozen', False):
+        if len(sys.path) > 1:
+            test_path = Path(sys.path[1])
+            if (test_path / 'runtime').exists() or (test_path / 'stdmodules').exists():
+                return test_path
+        exe_dir = Path(sys.executable).parent
+        if (exe_dir / 'runtime').exists() or (exe_dir / 'stdmodules').exists():
+            return exe_dir
+    
+    if hasattr(sys, '_MEIPASS'):
+        return Path(sys._MEIPASS)
+    
+    return Path(__file__).parent
+
+BASE_DIR = get_base_dir()
 sys.path.insert(0, str(BASE_DIR))
+
+# print(f"[DEBUG] BASE_DIR = {BASE_DIR}", file=sys.stderr)
+# print(f"[DEBUG] runtime exists: {(BASE_DIR / 'runtime').exists()}", file=sys.stderr)
+# print(f"[DEBUG] stdmodules exists: {(BASE_DIR / 'stdmodules').exists()}", file=sys.stderr)
 
 def main():
     parser = argparse.ArgumentParser(prog='ebt', description='ely Language Compiler')
@@ -108,9 +128,27 @@ def main():
         return config_command(args)
     return 0
 
+def _resolve_project_path(path_str: str) -> Path:
+    """
+    Разрешает путь к проекту: если передан путь к директории — ищет в ней manager.json.
+    Если передан файл — использует напрямую. По умолчанию ищет manager.json в CWD.
+    """
+    p = Path(path_str) if path_str else Path.cwd()
+    if p.is_dir():
+        manager = p / 'manager.json'
+        if manager.exists():
+            return manager
+        # Если передали явно директорию без manager.json — ошибка
+        if path_str:
+            raise FileNotFoundError(f"manager.json not found in directory: {p}")
+        raise FileNotFoundError(f"manager.json not found in current directory: {p}")
+    return p
+
+
 def build_command(args):
     from builder import ProjectBuilder
-    builder = ProjectBuilder(Path(args.file),
+    project_path = _resolve_project_path(args.file)
+    builder = ProjectBuilder(project_path,
                             compiler_path=args.compiler,
                             young_mb=args.young_mb,
                             old_mb=args.old_mb,
@@ -139,7 +177,8 @@ def build_module_command(args):
 def run_command(args):
     from builder import ProjectBuilder
     import subprocess
-    builder = ProjectBuilder(Path(args.file))
+    project_path = _resolve_project_path(args.file)
+    builder = ProjectBuilder(project_path)
     builder.optimization = 'hard'
     builder.debug = False
     success = builder.build()

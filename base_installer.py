@@ -17,8 +17,12 @@ from pathlib import Path
 class CompilerInstaller:
     def __init__(self, project_root=None):
         if project_root is None:
-            # Предполагаем, что скрипт находится в корне проекта Ely (рядом с ebt.py)
-            project_root = Path(__file__).parent.parent
+            # When frozen by PyInstaller, __file__ points to temp directory.
+            # sys.executable gives the actual .exe location.
+            if getattr(sys, 'frozen', False):
+                project_root = Path(sys.executable).parent
+            else:
+                project_root = Path(__file__).parent.parent
         self.project_root = Path(project_root)
         self.tools_dir = self.project_root / 'tools'
         self.gcc_dir = self.tools_dir / 'gcc'

@@ -1418,6 +1418,12 @@ class FuncCodeGen(CodeGenUtils):
         self.emit_to_method(f"{ret_raw} {method.name}({params}) {{")
         self.indent += 1
 
+        # Пролог для main: инициализация GC + chdir к папке exe
+        if method.name == 'main':
+            self.emit_to_method("gc_init();")
+            self.emit_to_method("_global_init();")
+            self.emit_to_method("gc_set_enabled(1);")
+
         old_func = self.current_function
         self.current_function = method.name
         old_func_ret = getattr(self, 'func_return_type', None)
