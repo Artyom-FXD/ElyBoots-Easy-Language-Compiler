@@ -338,11 +338,14 @@ static void scan_object_fields(void* obj_ptr) {
         }
         case GC_OBJ_DICT: {
             dict* d = (dict*)obj_ptr;
+            /* Копируем buckets-array внутри самого dict (иначе после GC dict потеряет свои корзины) */
+            d->buckets = copy_object(d->buckets);
             for (size_t i = 0; i < d->capacity; i++) {
                 dict_entry* e = d->buckets[i];
                 while (e) {
                     e->key = copy_object(e->key);
                     e->value = copy_object(e->value);
+                    if (e->next) e->next = copy_object(e->next);
                     e = e->next;
                 }
             }

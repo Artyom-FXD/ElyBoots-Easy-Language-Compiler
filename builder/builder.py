@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 if getattr(sys, 'frozen', False):
-    _BASE_DIR = Path(sys.executable).parent
+    if hasattr(sys, '_MEIPASS'):
+        _BASE_DIR = Path(sys._MEIPASS)
+    else:
+        _BASE_DIR = Path(sys.executable).parent
 elif sys.argv[0] and sys.argv[0].lower().endswith('.exe'):
     _BASE_DIR = Path(os.path.abspath(sys.argv[0])).parent
 else:

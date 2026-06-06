@@ -19,8 +19,8 @@ class CppCodeGen(ClassCodeGen):
 
     def _init_builtins(self):
         builtins = {
-            'print':     ('ely_println', 'void', ['char*']),
-            'println':   ('ely_println', 'void', ['char*']),
+            'print':     ('ely_println_str',   'void', ['char*']),
+            'println':   ('ely_println_str', 'void', ['char*']),
             'printOld':  ('ely_print',   'void', ['char*']),
             'timeNow':     ('ely_time_now',      'more', []),
             'timeNowMs':   ('ely_time_now_ms',   'more', []),
@@ -180,11 +180,19 @@ class CppCodeGen(ClassCodeGen):
                                 cls.impl_interfaces.append(inner.interface_name)
                             for method in inner.methods:
                                 method.is_override = True
-                                if method.name not in [m.name for m in cls.all_methods]:
+                                # Заменяем существующий метод с тем же именем (если есть)
+                                existing_idx = next((i for i, m in enumerate(cls.methods) if m.name == method.name), None)
+                                if existing_idx is not None:
+                                    cls.methods[existing_idx] = method
+                                else:
                                     cls.methods.append(method)
+                                all_idx = next((i for i, m in enumerate(cls.all_methods) if m.name == method.name), None)
+                                if all_idx is not None:
+                                    cls.all_methods[all_idx] = method
+                                else:
                                     cls.all_methods.append(method)
-                                    full_mname = f"{inner.class_name}_{method.name}"
-                                    self.original_functions[full_mname] = method
+                                full_mname = f"{inner.class_name}_{method.name}"
+                                self.original_functions[full_mname] = method
                 self.current_namespace = old_ns
                 continue
 
@@ -219,11 +227,19 @@ class CppCodeGen(ClassCodeGen):
                         cls.impl_interfaces.append(stmt.interface_name)
                     for method in stmt.methods:
                         method.is_override = True
-                        if method.name not in [m.name for m in cls.all_methods]:
+                        # Заменяем существующий метод с тем же именем (если есть)
+                        existing_idx = next((i for i, m in enumerate(cls.methods) if m.name == method.name), None)
+                        if existing_idx is not None:
+                            cls.methods[existing_idx] = method
+                        else:
                             cls.methods.append(method)
+                        all_idx = next((i for i, m in enumerate(cls.all_methods) if m.name == method.name), None)
+                        if all_idx is not None:
+                            cls.all_methods[all_idx] = method
+                        else:
                             cls.all_methods.append(method)
-                            full_name = f"{stmt.class_name}_{method.name}"
-                            self.original_functions[full_name] = method
+                        full_name = f"{stmt.class_name}_{method.name}"
+                        self.original_functions[full_name] = method
             elif isinstance(stmt, MethodDeclaration):
                 self.original_functions[stmt.name] = stmt
                 # Функции с пустым телом (из link.ely) — это extern-декларации
@@ -449,6 +465,12 @@ class CppCodeGen(ClassCodeGen):
             self.main_code.append("    gc_init();")
             self.main_code.append("    _global_init();")
             self.main_code.append("    gc_set_enabled(1);")
+            self.main_code.append("    try {")
+            self.main_code.append("        // пользовательский main будет вставлен сюда")
+            self.main_code.append("    } catch (ely_value* e) {")
+            self.main_code.append("        ely_println_str(ely_value_to_cstr(e));")
+            self.main_code.append("        return 1;")
+            self.main_code.append("    }")
             self.main_code.append("    return 0;")
             self.main_code.append("}")
 

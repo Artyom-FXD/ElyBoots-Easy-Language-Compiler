@@ -413,7 +413,7 @@ class Parser:
             self._advance()
             return self._parse_impl_body(interface_name, class_name)
 
-        if self._match(TokenType.CLASS):
+        if self._check(TokenType.CLASS):
             return self._parse_class_declaration()
         if self._match(TokenType.STRUCT):
             return self._parse_struct_declaration()
@@ -421,10 +421,6 @@ class Parser:
             return self._parse_type_alias()
         if self._match(TokenType.NAMESPACE):
             return self._parse_namespace_declaration()
-        if self._match(TokenType.INTERFACE):
-            return self._parse_interface_declaration()
-        if self._match(TokenType.IMPL):
-            return self._parse_impl_declaration()
         if self._match(TokenType.EXTERN):
             return self._parse_extern_function()
         if self._match(TokenType.CONST):

@@ -52,9 +52,9 @@ class CCodeGen:
     def _init_builtins(self):
         builtins = {
             # Console
-            'print':     ('ely_println', 'void', ['str']),
+            'print':     ('ely_print',    'void', ['str']),
             'println':   ('ely_println', 'void', ['str']),
-            'printOld':  ('ely_print',   'void', ['str']),
+            'print_old': ('ely_print',   'void', ['str']),
 
             # Time module
             'timeNow':     ('ely_time_now',      'more', []),

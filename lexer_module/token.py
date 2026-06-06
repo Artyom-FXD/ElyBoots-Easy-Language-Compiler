@@ -51,7 +51,6 @@ class TokenType(Enum):
     UNWAIT = 'unwait'
     SUPER = 'super'
 
-    VAR = 'var'
     INT = 'int'
     UINT = 'uint'
     MORE = 'more'
