@@ -77,6 +77,480 @@ static unsigned long long my_strtoull(const char *nptr, char **endptr, int base)
 }
 #endif
 
+typedef struct {
+    double value;
+} ely_boxed_double_t;
+
+/* ===========================================================================
+ *  Ely-boxing
+ * =========================================================================== */
+
+// Создание кучного double (Slow Path)
+ely_value ely_value_new_double_boxed(double d) {
+    ely_boxed_double_t* obj = (ely_boxed_double_t*)gc_alloc(sizeof(ely_boxed_double_t), GC_OBJ_DOUBLE);
+    if (!obj) {
+        fprintf(stderr, "Fatal: Out of memory while boxing double.\n");
+        abort();
+    }
+    obj->value = d;
+    return ely_box_ptr(obj);
+}
+
+double ely_value_as_double_slow(ely_value v) {
+    ely_boxed_double_t* obj = (ely_boxed_double_t*)ely_unbox_ptr(v);
+    return obj->value;
+}
+
+inline int ely_get_type(ely_value v) {
+    uint64_t tag = v & ELY_TAG_MASK;
+    if (v == ELY_TAG_NULL) return ely_VALUE_NULL;
+    if (tag == ELY_TAG_INT) return ely_VALUE_INT;
+    if (tag == ELY_TAG_BOOL) return ely_VALUE_BOOL;
+    if (tag == ELY_TAG_STRING) return ely_VALUE_STRING;
+    if (tag == ELY_TAG_PTR) {
+        void* ptr = ELY_UNBOX_PTR(v);
+        int gc_type = get_heap_obj_type(ptr);
+        if (gc_type == GC_OBJ_ARRAY) return ely_VALUE_ARRAY;
+        if (gc_type == GC_OBJ_OBJECT) return ely_VALUE_OBJECT;
+    }
+    return ely_VALUE_DOUBLE; // Float Self-Tagging: всё остальное — валидный double
+}
+
+// ------------------------ ely_value constructors ------------------------
+ely_value ely_value_new_null(void) {
+    return ELY_TAG_NULL;
+}
+
+ely_value ely_value_new_int(long long val) {
+    return ELY_TAG_INT | (val & ELY_PAYLOAD_MASK);
+}
+
+ely_value ely_value_new_double(double val) {
+    union { double d; uint64_t u; } cast;
+    cast.d = val;
+    if ((cast.u & 0x7FF0000000000000ULL) == 0x7FF0000000000000ULL && (cast.u & 0x000FFFFFFFFFFFFFULL) != 0) {
+        return 0x7FF8000000000001ULL; 
+    }
+    return cast.u;
+}
+
+ely_value ely_value_new_bool(int val) {
+    return ELY_TAG_BOOL | (val ? 1 : 0);
+}
+
+ely_value ely_value_new_array(arr* a) {
+    return ELY_TAG_PTR | ((uint64_t)a & ELY_PAYLOAD_MASK);
+}
+
+ely_value ely_value_new_string(const char *s) {
+    if (!s) return ELY_TAG_NULL;
+    char* dup = gc_strdup(s);
+    return ((ely_value)ely_VALUE_STRING << 56) | ((uint64_t)dup & ELY_PAYLOAD_MASK);
+}
+
+ely_value ely_value_new_object(dict* d) {
+    return ELY_TAG_PTR | ((uint64_t)d & ELY_PAYLOAD_MASK);
+}
+
+void ely_value_free(ely_value v) {
+    int type = ely_get_type(v);
+    void* ptr = ELY_UNBOX_PTR(v);
+    if (!ptr) return;
+    
+    switch (type) {
+        case ely_VALUE_ARRAY:  arr_free((arr*)ptr); break;
+        case ely_VALUE_OBJECT: dict_free((dict*)ptr); break;
+        default: break; 
+    }
+}
+
+ely_value ely_value_from_json(const char* json, size_t* pos) {
+    (void)pos;
+    dict* d = ely_dictify(json);
+    if (d) return ely_value_new_object(d);
+    return ely_value_new_null();
+}
+
+ely_value ely_value_new_string(const char* s) {
+    if (!s) return ELY_VAL_NULL;
+    
+    size_t len = strlen(s);
+    
+    // FAST PATH: Строка короткая? Пакуем прямо в регистр без аллокаций!
+    if (len <= 7) {
+        return ely_box_inline_str(s, len);
+    }
+    
+    // SLOW PATH: Длинная строка — уходит в кучу GigaCage под управление GC
+    char* heap_str = (char*)gc_alloc(len + 1, GC_OBJ_STRING); 
+    if (!heap_str) {
+        fprintf(stderr, "Fatal: Out of memory while allocating string.\n");
+        abort();
+    }
+    
+    memcpy(heap_str, s, len + 1);
+    return ely_box_ptr(heap_str);
+}
+
+// ------------------------ Дополнительные функции ------------------------
+ely_value ely_value_index(ely_value v, ely_value index) {
+    int v_type = ely_get_type(v);
+    int idx_type = ely_get_type(index);
+
+    if (v_type == ely_VALUE_ARRAY) {
+        if (idx_type == ely_VALUE_INT) {
+            size_t i = (size_t)ELY_UNBOX_INT(index);
+            arr* a = (arr*)ELY_UNBOX_PTR(v);
+            if (i < arr_len(a)) {
+                return arr_get(a, i);
+            }
+        }
+    } else if (v_type == ely_VALUE_OBJECT) {
+        if (idx_type == ely_VALUE_STRING) {
+            dict* d = (dict*)ELY_UNBOX_PTR(v);
+            char* str = (char*)ELY_UNBOX_PTR(index);
+            return dict_get_str(d, str);
+        }
+    }
+    return ely_value_new_null();
+}
+
+ely_value ely_value_get_key(ely_value v, const char* key) {
+    if (ely_get_type(v) != ely_VALUE_OBJECT) return ely_value_new_null();
+    dict* d = (dict*)ELY_UNBOX_PTR(v);
+    return dict_get_str(d, key);
+}
+
+void ely_value_set_key(ely_value v, const char* key, ely_value value) {
+    if (ely_get_type(v) != ely_VALUE_OBJECT) return;
+    dict* d = (dict*)ELY_UNBOX_PTR(v);
+    dict_set_str(d, key, value);
+}
+
+void ely_value_set_index(ely_value v, ely_value index, ely_value value) {
+    int v_type = ely_get_type(v);
+    int idx_type = ely_get_type(index);
+
+    if (v_type == ely_VALUE_ARRAY && idx_type == ely_VALUE_INT) {
+        size_t i = (size_t)ELY_UNBOX_INT(index);
+        arr* a = (arr*)ELY_UNBOX_PTR(v);
+        if (i < arr_len(a)) {
+            arr_set(a, i, value);
+        }
+    } else if (v_type == ely_VALUE_OBJECT && idx_type == ely_VALUE_STRING) {
+        dict* d = (dict*)ELY_UNBOX_PTR(v);
+        char* str = (char*)ELY_UNBOX_PTR(index);
+        dict_set_str(d, str, value);
+    }
+}
+
+// ------------------------ Базовые операции над ely_value ------------------------
+int ely_value_as_bool(ely_value v) {
+    switch (ely_get_type(v)) {
+        case ely_VALUE_BOOL:   return ELY_UNBOX_BOOL(v);
+        case ely_VALUE_INT:    return ELY_UNBOX_INT(v) != 0;
+        case ely_VALUE_DOUBLE: return ely_unbox_double(v) != 0.0;
+        case ely_VALUE_STRING: {
+            char* s = (char*)ELY_UNBOX_PTR(v);
+            return s && *s != '\0';
+        }
+        default:               return 0;
+    }
+}
+
+ely_value ely_value_add(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        if (type_a == ely_VALUE_INT && type_b == ely_VALUE_INT)
+            return ely_value_new_int((long long)(da + db));
+        else
+            return ely_value_new_double(da + db);
+    }
+    if (type_a == ely_VALUE_STRING || type_b == ely_VALUE_STRING) {
+        char* a_str = (type_a == ely_VALUE_STRING) ? ely_str_dup((char*)ELY_UNBOX_PTR(a)) : ely_value_to_string(a);
+        char* b_str = (type_b == ely_VALUE_STRING) ? ely_str_dup((char*)ELY_UNBOX_PTR(b)) : ely_value_to_string(b);
+        char* result = ely_str_concat(a_str, b_str);
+        return ely_value_new_string(result);
+    }
+    char* a_str = ely_value_to_json(a);
+    char* b_str = ely_value_to_json(b);
+    char* s = ely_str_concat(a_str, b_str);
+    return ely_value_new_string(s);
+}
+
+ely_value ely_value_sub(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        if (type_a == ely_VALUE_INT && type_b == ely_VALUE_INT)
+            return ely_value_new_int((long long)(da - db));
+        else
+            return ely_value_new_double(da - db);
+    }
+    return ely_value_new_null();
+}
+
+ely_value ely_value_mul(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        if (type_a == ely_VALUE_INT && type_b == ely_VALUE_INT)
+            return ely_value_new_int((long long)(da * db));
+        else
+            return ely_value_new_double(da * db);
+    }
+    return ely_value_new_null();
+}
+
+ely_value ely_value_div(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        if (db == 0.0) return ely_value_new_null();
+        if (type_a == ely_VALUE_INT && type_b == ely_VALUE_INT)
+            return ely_value_new_int((long long)(da / db));
+        else
+            return ely_value_new_double(da / db);
+    }
+    return ely_value_new_null();
+}
+
+ely_value ely_value_mod(ely_value a, ely_value b) {
+    if (ely_get_type(a) == ely_VALUE_INT && ely_get_type(b) == ely_VALUE_INT) {
+        long long bv = ELY_UNBOX_INT(b);
+        if (bv == 0) return ely_value_new_null();
+        return ely_value_new_int(ELY_UNBOX_INT(a) % bv);
+    }
+    return ely_value_new_null();
+}
+
+ely_value ely_value_eq(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if (type_a != type_b) return ely_value_new_bool(0);
+
+    switch (type_a) {
+        case ely_VALUE_BOOL:   return ely_value_new_bool(ELY_UNBOX_BOOL(a) == ELY_UNBOX_BOOL(b));
+        case ely_VALUE_INT:    return ely_value_new_bool(ELY_UNBOX_INT(a) == ELY_UNBOX_INT(b));
+        case ely_VALUE_DOUBLE: return ely_value_new_bool(ely_unbox_double(a) == ely_unbox_double(b));
+        case ely_VALUE_STRING: return ely_value_new_bool(strcmp((char*)ELY_UNBOX_PTR(a), (char*)ELY_UNBOX_PTR(b)) == 0);
+        default:               return ely_value_new_bool(a == b);
+    }
+}
+
+ely_value ely_value_ne(ely_value a, ely_value b) {
+    ely_value eq = ely_value_eq(a, b);
+    int bval = ely_value_as_bool(eq);
+    return ely_value_new_bool(!bval);
+}
+
+ely_value ely_value_lt(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        return ely_value_new_bool(da < db);
+    }
+    if (type_a == ely_VALUE_STRING && type_b == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp((char*)ELY_UNBOX_PTR(a), (char*)ELY_UNBOX_PTR(b)) < 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value ely_value_le(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        return ely_value_new_bool(da <= db);
+    }
+    if (type_a == ely_VALUE_STRING && type_b == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp((char*)ELY_UNBOX_PTR(a), (char*)ELY_UNBOX_PTR(b)) <= 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value ely_value_gt(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        return ely_value_new_bool(da > db);
+    }
+    if (type_a == ely_VALUE_STRING && type_b == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp((char*)ELY_UNBOX_PTR(a), (char*)ELY_UNBOX_PTR(b)) > 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value ely_value_ge(ely_value a, ely_value b) {
+    int type_a = ely_get_type(a);
+    int type_b = ely_get_type(b);
+    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
+        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
+        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
+        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
+        return ely_value_new_bool(da >= db);
+    }
+    if (type_a == ely_VALUE_STRING && type_b == ely_VALUE_STRING) {
+        return ely_value_new_bool(strcmp((char*)ELY_UNBOX_PTR(a), (char*)ELY_UNBOX_PTR(b)) >= 0);
+    }
+    return ely_value_new_bool(0);
+}
+
+ely_value ely_value_and(ely_value a, ely_value b) {
+    return ely_value_new_bool(ely_value_as_bool(a) && ely_value_as_bool(b));
+}
+
+ely_value ely_value_or(ely_value a, ely_value b) {
+    return ely_value_new_bool(ely_value_as_bool(a) || ely_value_as_bool(b));
+}
+
+ely_value ely_value_not(ely_value a) {
+    return ely_value_new_bool(!ely_value_as_bool(a));
+}
+
+ely_value ely_value_neg(ely_value a) {
+    int type = ely_get_type(a);
+    if (type == ely_VALUE_INT)
+        return ely_value_new_int(-ELY_UNBOX_INT(a));
+    if (type == ely_VALUE_DOUBLE)
+        return ely_value_new_double(-ely_unbox_double(a));
+    return ely_value_new_null();
+}
+
+// ------------------------ Обёртки для массивов ------------------------
+void ely_array_push(ely_value arr_val, ely_value elem) {
+    if (ely_get_type(arr_val) != ely_VALUE_ARRAY) return;
+    arr_push((arr*)ELY_UNBOX_PTR(arr_val), elem);
+}
+
+ely_value ely_array_pop(ely_value arr_val) {
+    if (ely_get_type(arr_val) != ely_VALUE_ARRAY) return ely_value_new_null();
+    return arr_pop_value((arr*)ELY_UNBOX_PTR(arr_val));
+}
+
+size_t ely_array_len(ely_value arr_val) {
+    if (ely_get_type(arr_val) != ely_VALUE_ARRAY) return 0;
+    return arr_len((arr*)ELY_UNBOX_PTR(arr_val));
+}
+
+ely_value ely_array_get(ely_value arr_val, size_t index) {
+    if (ely_get_type(arr_val) != ely_VALUE_ARRAY) return ely_value_new_null();
+    return arr_get((arr*)ELY_UNBOX_PTR(arr_val), index);
+}
+
+void ely_array_set(ely_value arr_val, size_t index, ely_value elem) {
+    if (ely_get_type(arr_val) != ely_VALUE_ARRAY) return;
+    arr_set((arr*)ELY_UNBOX_PTR(arr_val), index, elem);
+}
+
+// ------------------------ Обёртки для словарей ------------------------
+ely_value ely_dict_get(ely_value dict_val, ely_value key) {
+    if (ely_get_type(dict_val) != ely_VALUE_OBJECT) return ely_value_new_null();
+    return dict_get((dict*)ELY_UNBOX_PTR(dict_val), key);
+}
+
+void ely_dict_set(ely_value dict_val, ely_value key, ely_value value) {
+    if (ely_get_type(dict_val) != ely_VALUE_OBJECT) return;
+    dict_set((dict*)ELY_UNBOX_PTR(dict_val), key, value);
+}
+
+void ely_dict_del(ely_value dict_val, ely_value key) {
+    if (ely_get_type(dict_val) != ely_VALUE_OBJECT) return;
+    dict* d = (dict*)ELY_UNBOX_PTR(dict_val);
+    if (ely_get_type(key) == ely_VALUE_STRING) {
+        dict_delete_str(d, (char*)ELY_UNBOX_PTR(key));
+    } else {
+        dict_delete(d, key);
+    }
+}
+
+// ------------------ Reflection & Methods --------------------
+char* ely_typeof(ely_value v) {
+    switch (ely_get_type(v)) {
+        case ely_VALUE_NULL:   return "null";
+        case ely_VALUE_BOOL:   return "bool";
+        case ely_VALUE_INT:    return "int";
+        case ely_VALUE_DOUBLE: return "double";
+        case ely_VALUE_STRING: return "string";
+        case ely_VALUE_ARRAY:  return "array";
+        case ely_VALUE_OBJECT: return "object";
+        default:               return "unknown";
+    }
+}
+
+ely_value ely_value_call_method(ely_value obj, const char* method_name, ely_value* args, int argc) {
+    int obj_type = ely_get_type(obj);
+    void* raw_obj = ELY_UNBOX_PTR(obj);
+
+    if (obj_type == ely_VALUE_ARRAY) {
+        arr* a = (arr*)raw_obj;
+        if (strcmp(method_name, "push") == 0 && argc == 1) {
+            arr_push(a, args[0]);
+            return ely_value_new_null();
+        }
+        else if (strcmp(method_name, "len") == 0 && argc == 0) {
+            return ely_value_new_int(arr_len(a));
+        }
+    }
+    else if (obj_type == ely_VALUE_STRING) {
+        const char* s = (const char*)raw_obj;
+        if (!s) return ely_value_new_null();
+        if (strcmp(method_name, "len") == 0 && argc == 0)
+            return ely_value_new_int(strlen(s));
+    }
+    else if (obj_type == ely_VALUE_OBJECT) {
+        dict* d = (dict*)raw_obj;
+        if (strcmp(method_name, "size") == 0 && argc == 0) {
+            return ely_value_new_int(dict_size(d));
+        }
+    }
+    return ely_value_new_null();
+}
+
+// Проверки типов (вместо v->type == ely_VALUE_INT)
+static inline bool ely_is_int(ely_value v) {
+    return (v & ELY_TAG_MASK) == ELY_TAG_INT;
+}
+static inline bool ely_is_ptr(ely_value v) {
+    return (v & ELY_TAG_MASK) == ELY_TAG_PTR;
+}
+static inline bool ely_is_double(ely_value v) {
+    // В NaN-boxing всё, что меньше ELY_MIN_TAG_VALUE — честный double
+    return v < 0xFFF8000000000000ULL;
+}
+
+// Извлечение сырых значений (вместо v->u.int_val)
+static inline long long ely_as_int(ely_value v) {
+    // Если используете 48-битное целое со знаком, может потребоваться sign-extension
+    return (long long)(v & ELY_VAL_MASK); 
+}
+
+static inline void* ely_as_ptr(ely_value v) {
+    return (void*)(uintptr_t)(v & ELY_VAL_MASK);
+}
+
 // ------------------------ Консоль ------------------------
 void ely_print(const char* str) { if (str) fputs(str, stdout); }
 void ely_print_int(ely_int n) { printf("%d", n); }
@@ -510,11 +984,11 @@ static char* _jsonify_string(const char* s) {
 }
 
 static char* array_to_json(arr* a) {
-    if (!a) return ely_str_dup("null");
-    char* result = ely_str_dup("[");
+    if (!a) return strdup("null");
+    char* result = strdup("[");
     for (size_t i = 0; i < arr_len(a); i++) {
         if (i > 0) result = ely_str_concat(result, ",");
-        ely_value* elem = arr_get(a, i);
+        ely_value elem = arr_get(a, i); // Получаем по значению!
         char* elem_json = ely_value_to_json(elem);
         result = ely_str_concat(result, elem_json);
     }
@@ -522,26 +996,12 @@ static char* array_to_json(arr* a) {
     return result;
 }
 
-char* ely_value_to_string(ely_value* v) {
-    if (!v) return ely_str_dup("null");
-    switch (v->type) {
-        case ely_VALUE_NULL: return ely_str_dup("null");
-        case ely_VALUE_BOOL: return ely_bool_to_str(v->u.bool_val);
-        case ely_VALUE_INT: return ely_int_to_str(v->u.int_val);
-        case ely_VALUE_DOUBLE: return ely_double_to_str(v->u.double_val);
-        case ely_VALUE_STRING: return ely_str_dup(v->u.string_val);
-        case ely_VALUE_ARRAY: return ely_array_to_json(v);
-        case ely_VALUE_OBJECT: return ely_dict_to_json(v);
-        default: return ely_str_dup("null");
-    }
-}
-
 static char* dict_to_json(dict* d) {
-    if (!d) return ely_str_dup("null not d");
-    char* result = ely_str_dup("{");
+    if (!d) return strdup("null");
+    char* result = strdup("{");
     int first = 1;
     for (size_t i = 0; i < d->capacity; i++) {
-        dict_entry* e = d->buckets[i];
+        dict_entry* e = d->buckets[i]; // Используем buckets!
         while (e) {
             if (!first) result = ely_str_concat(result, ",");
             first = 0;
@@ -557,31 +1017,80 @@ static char* dict_to_json(dict* d) {
     return result;
 }
 
-// ------------------------ Главная функция сериализации ------------------------
-char* ely_value_to_json(ely_value* v) {
-    if (!v) return ely_str_dup("null");
-    switch (v->type) {
-        case ely_VALUE_NULL: return ely_str_dup("null");
-        case ely_VALUE_BOOL: return ely_str_dup(v->u.bool_val ? "true" : "false");
-        case ely_VALUE_INT: {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%lld", v->u.int_val);
-            return ely_str_dup(buf);
+#define ely_is_null(v)   ((v) == 0)
+#define ely_is_bool(v)   (((v) & 0xFFFF000000000000ULL) == ELY_TAG_BOOL)
+
+char* ely_value_to_string(ely_value v) {
+    char* buf = malloc(64);
+    if (!buf) return NULL;
+
+    if (ely_is_null(v)) {
+        return ely_str_dup("null");
+    } else if (ely_is_bool(v)) {
+        int actual_bool = (int)(v & 1); 
+        return ely_bool_to_str(actual_bool);
+    } else if (ely_is_int(v)) {
+        snprintf(buf, 64, "%lld", (long long)ely_unbox_int(v));
+    } else if (ely_is_double(v)) {
+        snprintf(buf, 64, "%g", ely_unbox_double(v));
+    } else if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        // Инлайновая строка Tier 0
+        ely_unbox_inline_str(v, buf);
+    } else if (ely_is_ptr(v)) {
+        // Если это указатель — заглядываем в хедер объекта кучи
+        void* ptr = (void*)ely_unbox_ptr(v);
+        uint8_t type = get_heap_obj_type(ptr);
+        
+        if (type == GC_OBJ_STRING) {
+            free(buf);
+            return strdup((const char*)ptr);
+        } else if (type == GC_OBJ_ARRAY) {
+            free(buf);
+            return array_to_json((arr*)ptr);
+        } else if (type == GC_OBJ_OBJECT) {
+            free(buf);
+            return dict_to_json((dict*)ptr);
+        } else {
+            snprintf(buf, 64, "[object]");
         }
-        case ely_VALUE_DOUBLE: {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%g", v->u.double_val);
-            return ely_str_dup(buf);
-        }
-        case ely_VALUE_STRING:
-            return _jsonify_string(v->u.string_val);
-        case ely_VALUE_ARRAY:
-            return array_to_json(v->u.array_val);
-        case ely_VALUE_OBJECT:
-            return dict_to_json(v->u.object_val);
-        default:
-            return ely_str_dup("null");
+    } else {
+        snprintf(buf, 64, "[unknown]");
     }
+    return buf;
+}
+
+// ------------------------ Главная функция сериализации ------------------------
+char* ely_value_to_json(ely_value v) {
+    if (ely_is_null(v))   return strdup("null");
+    if (ely_is_bool(v))   return strdup(ely_unbox_bool(v) ? "true" : "false");
+    
+    if (ely_is_int(v)) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%lld", (long long)ely_unbox_int(v));
+        return strdup(buf);
+    }
+    if (ely_is_double(v)) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%g", ely_unbox_double(v));
+        return strdup(buf);
+    }
+    if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        char buf[8];
+        ely_unbox_inline_str(v, buf);
+        return _jsonify_string(buf);
+    }
+    if (ely_is_ptr(v)) {
+        void* ptr = (void*)ely_unbox_ptr(v);
+        uint8_t type = get_heap_obj_type(ptr);
+        if (type == GC_OBJ_STRING) {
+            return _jsonify_string((const char*)ptr);
+        } else if (type == GC_OBJ_ARRAY) {
+            return array_to_json((arr*)ptr);
+        } else if (type == GC_OBJ_OBJECT) {
+            return dict_to_json((dict*)ptr);
+        }
+    }
+    return strdup("null");
 }
 
 // ------------------------ Парсинг JSON (ely_dictify) ------------------------
@@ -755,219 +1264,6 @@ static arr* parse_array(json_parser* p) {
     return a;
 }
 
-// ------------------------ ely_value implementation ------------------------
-ely_value* ely_value_new_null(void) {
-    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
-    if (!v) return NULL;
-    v->type = ely_VALUE_NULL;
-    return v;
-}
-ely_value* ely_value_new_bool(int b) {
-    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
-    if (!v) return NULL;
-    v->type = ely_VALUE_BOOL;
-    v->u.bool_val = b;
-    return v;
-}
-ely_value* ely_value_new_int(long long i) {
-    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
-    if (!v) return NULL;
-    v->type = ely_VALUE_INT;
-    v->u.int_val = i;
-    return v;
-}
-ely_value* ely_value_new_double(double d) {
-    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
-    if (!v) return NULL;
-    v->type = ely_VALUE_DOUBLE;
-    v->u.double_val = d;
-    return v;
-}
-ely_value* ely_value_new_string(const char* s) {
-    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
-    if (!v) return NULL;
-    v->type = ely_VALUE_STRING;
-    v->u.string_val = s ? ely_str_dup(s) : NULL;
-    return v;
-}
-ely_value* ely_value_new_array(arr* a) {
-    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
-    if (!v) return NULL;
-    v->type = ely_VALUE_ARRAY;
-    v->u.array_val = a;
-    return v;
-}
-ely_value* ely_value_new_object(dict* d) {
-    ely_value* v = (ely_value*)gc_calloc(sizeof(ely_value), GC_OBJ_VALUE);
-    if (!v) return NULL;
-    v->type = ely_VALUE_OBJECT;
-    v->u.object_val = d;
-    return v;
-}
-void ely_value_free(ely_value* v) {
-    if (!v) return;
-    switch (v->type) {
-        case ely_VALUE_STRING: if (v->u.string_val) break;
-        case ely_VALUE_ARRAY: if (v->u.array_val) arr_free(v->u.array_val); break;
-        case ely_VALUE_OBJECT: if (v->u.object_val) dict_free(v->u.object_val); break;
-        default: break;
-    }
-}
-
-ely_value* ely_value_from_json(const char* json, size_t* pos) {
-    (void)pos;
-    dict* d = ely_dictify(json);
-    if (d) return ely_value_new_object(d);
-    return NULL;
-}
-
-// ------------------------ Дополнительные функции ------------------------
-ely_value* ely_value_index(ely_value* v, ely_value* index) {
-    if (!v) return ely_value_new_null();
-    if (v->type == ely_VALUE_ARRAY) {
-        if (index->type == ely_VALUE_INT) {
-            size_t i = (size_t)index->u.int_val;
-            arr* a = v->u.array_val;
-            if (i < arr_len(a)) {
-                return arr_get(a, i);
-            }
-        }
-    } else if (v->type == ely_VALUE_OBJECT) {
-        if (index->type == ely_VALUE_STRING) {
-            dict* d = v->u.object_val;
-            return dict_get_str(d, index->u.string_val);
-        }
-    }
-    return ely_value_new_null();
-}
-
-ely_value* ely_value_get_key(ely_value* v, const char* key) {
-    if (!v || v->type != ely_VALUE_OBJECT) return ely_value_new_null();
-    dict* d = v->u.object_val;
-    return dict_get_str(d, key);
-}
-
-void ely_value_set_key(ely_value* v, const char* key, ely_value* value) {
-    if (!v || v->type != ely_VALUE_OBJECT) return;
-    dict* d = v->u.object_val;
-    dict_set_str(d, key, value);
-}
-
-void ely_value_set_index(ely_value* v, ely_value* index, ely_value* value) {
-    if (!v) return;
-    if (v->type == ely_VALUE_ARRAY && index->type == ely_VALUE_INT) {
-        size_t i = (size_t)index->u.int_val;
-        arr* a = v->u.array_val;
-        if (i < arr_len(a)) {
-            ely_value* old = arr_get(a, i);
-            if (old) ely_value_free(old);
-            arr_set(a, i, value);
-        }
-    } else if (v->type == ely_VALUE_OBJECT && index->type == ely_VALUE_STRING) {
-        dict* d = v->u.object_val;
-        dict_set_str(d, index->u.string_val, value);
-    }
-}
-
-// ------------------------ Базовые операции над ely_value ------------------------
-int ely_value_as_bool(ely_value* v) {
-    if (!v) return 0;
-    switch (v->type) {
-        case ely_VALUE_BOOL: return v->u.bool_val;
-        case ely_VALUE_INT: return v->u.int_val != 0;
-        case ely_VALUE_DOUBLE: return v->u.double_val != 0.0;
-        case ely_VALUE_STRING: return v->u.string_val && *v->u.string_val != '\0';
-        default: return 0;
-    }
-}
-
-ely_value* ely_value_add(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_null();
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
-            return ely_value_new_int(da + db);
-        else
-            return ely_value_new_double(da + db);
-    }
-    if (a->type == ely_VALUE_STRING || b->type == ely_VALUE_STRING) {
-        char* a_str = (a->type == ely_VALUE_STRING) ? ely_str_dup(a->u.string_val) : ely_value_to_string(a);
-        char* b_str = (b->type == ely_VALUE_STRING) ? ely_str_dup(b->u.string_val) : ely_value_to_string(b);
-        char* result = ely_str_concat(a_str, b_str);
-        return ely_value_new_string(result);
-    }
-    char* a_str = ely_value_to_json(a);
-    char* b_str = ely_value_to_json(b);
-    char* s = ely_str_concat(a_str, b_str);
-    return ely_value_new_string(s);
-}
-
-ely_value* ely_value_sub(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_null();
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
-            return ely_value_new_int(da - db);
-        else
-            return ely_value_new_double(da - db);
-    }
-    return ely_value_new_null();
-}
-
-ely_value* ely_value_mul(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_null();
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
-            return ely_value_new_int(da * db);
-        else
-            return ely_value_new_double(da * db);
-    }
-    return ely_value_new_null();
-}
-
-ely_value* ely_value_div(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_null();
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        if (db == 0.0) return ely_value_new_null();
-        if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT)
-            return ely_value_new_int(da / db);
-        else
-            return ely_value_new_double(da / db);
-    }
-    return ely_value_new_null();
-}
-
-ely_value* ely_value_mod(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_null();
-    if (a->type == ely_VALUE_INT && b->type == ely_VALUE_INT) {
-        if (b->u.int_val == 0) return ely_value_new_null();
-        return ely_value_new_int(a->u.int_val % b->u.int_val);
-    }
-    return ely_value_new_null();
-}
-
-ely_value* ely_value_eq(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_bool(a == b);
-    if (a->type != b->type) return ely_value_new_bool(0);
-    switch (a->type) {
-        case ely_VALUE_BOOL: return ely_value_new_bool(a->u.bool_val == b->u.bool_val);
-        case ely_VALUE_INT: return ely_value_new_bool(a->u.int_val == b->u.int_val);
-        case ely_VALUE_DOUBLE: return ely_value_new_bool(a->u.double_val == b->u.double_val);
-        case ely_VALUE_STRING: return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) == 0);
-        default: return ely_value_new_bool(a == b);
-    }
-}
-
 ely_value* ely_value_ne(ely_value* a, ely_value* b) {
     ely_value* eq = ely_value_eq(a, b);
     int bval = ely_value_as_bool(eq);
@@ -975,245 +1271,104 @@ ely_value* ely_value_ne(ely_value* a, ely_value* b) {
     return ely_value_new_bool(!bval);
 }
 
-ely_value* ely_value_lt(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_bool(0);
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        return ely_value_new_bool(da < db);
-    }
-    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
-        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) < 0);
-    }
-    return ely_value_new_bool(0);
-}
-
-ely_value* ely_value_le(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_bool(0);
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        return ely_value_new_bool(da <= db);
-    }
-    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
-        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) <= 0);
-    }
-    return ely_value_new_bool(0);
-}
-
-ely_value* ely_value_gt(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_bool(0);
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        return ely_value_new_bool(da > db);
-    }
-    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
-        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) > 0);
-    }
-    return ely_value_new_bool(0);
-}
-
-ely_value* ely_value_ge(ely_value* a, ely_value* b) {
-    if (!a || !b) return ely_value_new_bool(0);
-    if ((a->type == ely_VALUE_INT || a->type == ely_VALUE_DOUBLE) &&
-        (b->type == ely_VALUE_INT || b->type == ely_VALUE_DOUBLE)) {
-        double da = (a->type == ely_VALUE_INT) ? (double)a->u.int_val : a->u.double_val;
-        double db = (b->type == ely_VALUE_INT) ? (double)b->u.int_val : b->u.double_val;
-        return ely_value_new_bool(da >= db);
-    }
-    if (a->type == ely_VALUE_STRING && b->type == ely_VALUE_STRING) {
-        return ely_value_new_bool(strcmp(a->u.string_val, b->u.string_val) >= 0);
-    }
-    return ely_value_new_bool(0);
-}
-
-ely_value* ely_value_and(ely_value* a, ely_value* b) {
-    return ely_value_new_bool(ely_value_as_bool(a) && ely_value_as_bool(b));
-}
-
-ely_value* ely_value_or(ely_value* a, ely_value* b) {
-    return ely_value_new_bool(ely_value_as_bool(a) || ely_value_as_bool(b));
-}
-
-ely_value* ely_value_not(ely_value* a) {
-    return ely_value_new_bool(!ely_value_as_bool(a));
-}
-
-ely_value* ely_value_neg(ely_value* a) {
-    if (!a) return ely_value_new_null();
-    if (a->type == ely_VALUE_INT)
-        return ely_value_new_int(-a->u.int_val);
-    if (a->type == ely_VALUE_DOUBLE)
-        return ely_value_new_double(-a->u.double_val);
-    return ely_value_new_null();
-}
-
-// ------------------------ Обёртки для массивов ------------------------
-void ely_array_push(ely_value* arr, ely_value* elem) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return;
-    arr_push(arr->u.array_val, elem);
-}
-
-ely_value* ely_array_pop(ely_value* arr) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return NULL;
-    return arr_pop_value(arr->u.array_val);
-}
-
-size_t ely_array_len(ely_value* arr) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return 0;
-    return arr_len(arr->u.array_val);
-}
-
-ely_value* ely_array_get(ely_value* arr, size_t index) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return NULL;
-    return arr_get(arr->u.array_val, index);
-}
-
-void ely_array_set(ely_value* arr, size_t index, ely_value* elem) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return;
-    arr_set(arr->u.array_val, index, elem);
-}
-
-void ely_array_insert(ely_value* arr, size_t index, ely_value* elem) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return;
-    arr_insert(arr->u.array_val, index, elem);
-}
-
-int ely_array_remove_value(ely_value* arr, ely_value* value) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return -1;
-    return arr_remove_value(arr->u.array_val, value);
-}
-
-int ely_array_remove_index(ely_value* arr, size_t index) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return -1;
-    return arr_remove_index(arr->u.array_val, index);
-}
-
-int ely_array_index(ely_value* arr, ely_value* value) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return -1;
-    return arr_index(arr->u.array_val, value);
-}
-
-// ------------------------ Обёртки для словарей ------------------------
-ely_value* ely_dict_get(ely_value* dict, ely_value* key) {
-    if (!dict || dict->type != ely_VALUE_OBJECT) return NULL;
-    return dict_get(dict->u.object_val, key);
-}
-
-void ely_dict_set(ely_value* dict, ely_value* key, ely_value* value) {
-    if (!dict || dict->type != ely_VALUE_OBJECT) return;
-    dict_set(dict->u.object_val, key, value);
-}
-
-void ely_dict_del(ely_value* dict, ely_value* key) {
-    if (!dict || dict->type != ely_VALUE_OBJECT) return;
-    if (key->type == ely_VALUE_STRING) {
-        dict_delete_str(dict->u.object_val, key->u.string_val);
-    } else {
-        dict_delete(dict->u.object_val, key);
-    }
-}
-
-int ely_dict_has(ely_value* dict, ely_value* key) {
-    if (!dict || dict->type != ely_VALUE_OBJECT) return 0;
-    if (key->type == ely_VALUE_STRING) {
-        return dict_has_str(dict->u.object_val, key->u.string_val);
-    } else {
-        return dict_has(dict->u.object_val, key);
-    }
-}
-
-ely_value* ely_dict_keys(ely_value* dict) {
-    if (!dict || dict->type != ely_VALUE_OBJECT) return ely_value_new_array(arr_new());
-    arr* keys_arr = dict_keys(dict->u.object_val);
-    return ely_value_new_array(keys_arr);
-}
-
-char* ely_dict_to_json(ely_value* dict) {
-    if (!dict || dict->type != ely_VALUE_OBJECT) return ely_str_dup("null");
-    return dict_to_json(dict->u.object_val);
-}
-
 // -------------------------------------------------------------------
 // Совместимость со старыми именами функций (для переходного периода)
 // -------------------------------------------------------------------
-void del(ely_value* dict, char* key) {
-    ely_value* key_val = ely_value_new_string(key);
-    ely_dict_del(dict, key_val);
-    ely_value_free(key_val);
+void del(ely_value dict_val, char *key) {
+    dict* d = (dict*)ELY_UNBOX_PTR(dict_val);
+    if (d) {
+        dict_delete_str(d, key); // Или твоя внутренняя функция удаления
+    }
 }
 
-int has(ely_value* dict, char* key) {
-    ely_value* key_val = ely_value_new_string(key);
-    int res = ely_dict_has(dict, key_val);
-    ely_value_free(key_val);
-    return res;
+int has(ely_value dict_val, char *key) {
+    dict* d = (dict*)ELY_UNBOX_PTR(dict_val);
+    if (!d) return 0;
+    return dict_has_str(d, key); 
 }
 
-ely_value* keys(ely_value* dict) {
-    return ely_dict_keys(dict);
+ely_value keys(ely_value dict_val) {
+    dict* d = (dict*)ELY_UNBOX_PTR(dict_val);
+    if (!d) return ely_value_new_array(arr_new());
+    
+    arr* k_arr = dict_keys(d);
+    return ely_value_new_array(k_arr);
 }
 
-char* toJson(ely_value* dict) {
-    return ely_dict_to_json(dict);
+char* toJson(ely_value dict_val) {
+    int t = ely_get_type(dict_val);
+    if (t == ely_VALUE_OBJECT) {
+        return object_to_json((dict*)ELY_UNBOX_PTR(dict_val));
+    } else if (t == ely_VALUE_ARRAY) {
+        return array_to_json((arr*)ELY_UNBOX_PTR(dict_val));
+    }
+    return ely_str_dup("null");
 }
 
-char* ely_array_to_json(ely_value* arr) {
-    if (!arr || arr->type != ely_VALUE_ARRAY) return ely_str_dup("null");
-    return array_to_json(arr->u.array_val);
+// -------------------------------------------------------------------
+// Перевод оставшейся части рантайма на архитектуру Ely-boxing
+// -------------------------------------------------------------------
+
+char* ely_array_to_json(ely_value arr_val) {
+    if (ely_get_type(arr_val) != ely_VALUE_ARRAY) return ely_str_dup("null");
+    return array_to_json((arr*)ELY_UNBOX_PTR(arr_val));
 }
 
 // ------------------ OTHER --------------------
-ely_bool isType(ely_value* value, const char* type_name) {
-    if (value == NULL || type_name == NULL) return 0;
-    if (strcmp(type_name, "null") == 0)    return value->type == ely_VALUE_NULL;
-    if (strcmp(type_name, "bool") == 0)    return value->type == ely_VALUE_BOOL;
-    if (strcmp(type_name, "int") == 0)     return value->type == ely_VALUE_INT;
-    if (strcmp(type_name, "double") == 0)  return value->type == ely_VALUE_DOUBLE;
-    if (strcmp(type_name, "string") == 0)  return value->type == ely_VALUE_STRING;
-    if (strcmp(type_name, "array") == 0)   return value->type == ely_VALUE_ARRAY;
-    if (strcmp(type_name, "object") == 0)  return value->type == ely_VALUE_OBJECT;
+ely_bool isType(ely_value value, const char* type_name) {
+    if (type_name == NULL) return 0;
+    
+    int t = ely_get_type(value);
+    if (strcmp(type_name, "null") == 0)    return t == ely_VALUE_NULL;
+    if (strcmp(type_name, "bool") == 0)    return t == ely_VALUE_BOOL;
+    if (strcmp(type_name, "int") == 0)     return t == ely_VALUE_INT;
+    if (strcmp(type_name, "double") == 0)  return t == ely_VALUE_DOUBLE;
+    if (strcmp(type_name, "string") == 0)  return t == ely_VALUE_STRING;
+    if (strcmp(type_name, "array") == 0)   return t == ely_VALUE_ARRAY;
+    if (strcmp(type_name, "object") == 0)  return t == ely_VALUE_OBJECT;
 
-    if (value->type == ely_VALUE_OBJECT) {
-        ely_value* chain = dict_get_str(value->u.object_val, "__class_chain");
-        if (chain && chain->type == ely_VALUE_ARRAY) {
-            arr* chain_arr = chain->u.array_val;
+    // Проверка цепочки прототипов/классов для пользовательских типов
+    if (t == ely_VALUE_OBJECT) {
+        dict* d = (dict*)ELY_UNBOX_PTR(value);
+        
+        ely_value chain = dict_get_str(d, "__class_chain");
+        if (ely_get_type(chain) == ely_VALUE_ARRAY) {
+            arr* chain_arr = (arr*)ELY_UNBOX_PTR(chain);
             for (size_t i = 0; i < arr_len(chain_arr); i++) {
-                ely_value* cls_name = arr_get(chain_arr, i);
-                if (cls_name && cls_name->type == ely_VALUE_STRING) {
-                    if (strcmp(cls_name->u.string_val, type_name) == 0)
+                ely_value cls_name = arr_get(chain_arr, i);
+                if (ely_get_type(cls_name) == ely_VALUE_STRING) {
+                    if (strcmp((char*)ELY_UNBOX_PTR(cls_name), type_name) == 0)
                         return 1;
                 }
             }
         }
-        ely_value* cls = dict_get_str(value->u.object_val, "__class");
-        if (cls && cls->type == ely_VALUE_STRING) {
-            return strcmp(cls->u.string_val, type_name) == 0;
+        
+        ely_value cls = dict_get_str(d, "__class");
+        if (ely_get_type(cls) == ely_VALUE_STRING) {
+            return strcmp((char*)ELY_UNBOX_PTR(cls), type_name) == 0;
         }
     }
     return 0;
 }
 
-ely_bool isNull(ely_value* value) {
-    return value->type == ely_VALUE_NULL;
+ely_bool isNull(ely_value value) {
+    return ely_get_type(value) == ely_VALUE_NULL;
 }
 
-ely_bool isIn(ely_value* value, arr* in) {
+ely_bool isIn(ely_value value, arr* in) {
+    if (!in) return 0;
     for (int i = 0; i < arr_len(in); i++) {
-        if (ely_value_eq(value, arr_get(in, i))) {
+        // ely_value_eq теперь принимает значения напрямую
+        if (ely_value_as_bool(ely_value_eq(value, arr_get(in, i)))) {
             return 1;
         }
     }
     return 0;
 }
+
 // ------------------------ Reflection ------------------------
-char* ely_typeof(ely_value* v) {
-    if (!v) return "null";
-    switch (v->type) {
+char* ely_typeof(ely_value v) {
+    switch (ely_get_type(v)) {
         case ely_VALUE_NULL:   return "null";
         case ely_VALUE_BOOL:   return "bool";
         case ely_VALUE_INT:    return "int";
@@ -1225,16 +1380,15 @@ char* ely_typeof(ely_value* v) {
     }
 }
 
-ely_value* ely_value_get_fields(ely_value* v) {
+ely_value ely_value_get_fields(ely_value v) {
     arr* fields = arr_new();
-    if (!v) return ely_value_new_array(fields);
-
-    if (v->type == ely_VALUE_OBJECT) {
-        dict* d = v->u.object_val;
+    if (ely_get_type(v) == ely_VALUE_OBJECT) {
+        dict* d = (dict*)ELY_UNBOX_PTR(v);
         for (size_t i = 0; i < d->capacity; i++) {
             dict_entry* e = d->buckets[i];
             while (e) {
-                if (e->key && e->key->type == ely_VALUE_STRING) {
+                // e->key теперь является упакованным ely_value (String)
+                if (ely_get_type(e->key) == ely_VALUE_STRING) {
                     arr_push(fields, e->key);
                 }
                 e = e->next;
@@ -1244,34 +1398,35 @@ ely_value* ely_value_get_fields(ely_value* v) {
     return ely_value_new_array(fields);
 }
 
-ely_value* ely_value_get_methods(ely_value* v) {
+ely_value ely_value_get_methods(ely_value v) {
     arr* methods = arr_new();
-    if (!v) return ely_value_new_array(methods);
+    int t = ely_get_type(v);
 
-    if (v->type == ely_VALUE_OBJECT) {
-        dict* d = v->u.object_val;
+    if (t == ely_VALUE_OBJECT) {
+        dict* d = (dict*)ELY_UNBOX_PTR(v);
         for (size_t i = 0; i < d->capacity; i++) {
             dict_entry* e = d->buckets[i];
             while (e) {
-                if (e->value && e->value->type == ely_VALUE_FUNCTION) {
-                    if (e->key && e->key->type == ely_VALUE_STRING) {
+                // Проверяем кастомные методы объекта (значение должно иметь тег функции)
+                if (ely_get_type(e->value) == ely_VALUE_FUNCTION) {
+                    if (ely_get_type(e->key) == ely_VALUE_STRING) {
                         arr_push(methods, e->key);
                     }
                 }
                 e = e->next;
             }
         }
-    } else if (v->type == ely_VALUE_ARRAY) {
+    } else if (t == ely_VALUE_ARRAY) {
         const char* arr_methods[] = {"push", "pop", "len", "insert", "remove", "index"};
         for (int i = 0; i < 6; i++) {
             arr_push(methods, ely_value_new_string(gc_strdup(arr_methods[i])));
         }
-    } else if (v->type == ely_VALUE_STRING) {
+    } else if (t == ely_VALUE_STRING) {
         const char* str_methods[] = {"len", "dup", "concat", "cmp", "substr", "trim", "replace"};
         for (int i = 0; i < 7; i++) {
             arr_push(methods, ely_value_new_string(gc_strdup(str_methods[i])));
         }
-    } else if (v->type == ely_VALUE_INT || v->type == ely_VALUE_DOUBLE) {
+    } else if (t == ely_VALUE_INT || t == ely_VALUE_DOUBLE) {
         const char* num_methods[] = {"toStr", "abs", "toInt", "toDouble"};
         for (int i = 0; i < 4; i++) {
             arr_push(methods, ely_value_new_string(gc_strdup(num_methods[i])));
@@ -1280,28 +1435,28 @@ ely_value* ely_value_get_methods(ely_value* v) {
     return ely_value_new_array(methods);
 }
 
-ely_value* ely_invoke(void* func_ptr, ely_value** args, int argc) {
+ely_value ely_invoke(void* func_ptr, ely_value* args, int argc) {
     if (!func_ptr) return ely_value_new_null();
     switch (argc) {
         case 0: {
-            ely_value* (*f)(void) = (ely_value* (*)(void))func_ptr;
+            ely_value (*f)(void) = (ely_value (*)(void))func_ptr;
             return f();
         }
         case 1: {
-            ely_value* (*f)(ely_value*) = (ely_value* (*)(ely_value*))func_ptr;
+            ely_value (*f)(ely_value) = (ely_value (*)(ely_value))func_ptr;
             return f(args[0]);
         }
         case 2: {
-            ely_value* (*f)(ely_value*, ely_value*) = (ely_value* (*)(ely_value*, ely_value*))func_ptr;
+            ely_value (*f)(ely_value, ely_value) = (ely_value (*)(ely_value, ely_value))func_ptr;
             return f(args[0], args[1]);
         }
         case 3: {
-            ely_value* (*f)(ely_value*, ely_value*, ely_value*) = (ely_value* (*)(ely_value*, ely_value*, ely_value*))func_ptr;
+            ely_value (*f)(ely_value, ely_value, ely_value) = (ely_value (*)(ely_value, ely_value, ely_value))func_ptr;
             return f(args[0], args[1], args[2]);
         }
         case 4: {
-            ely_value* (*f)(ely_value*, ely_value*, ely_value*, ely_value*) = 
-                (ely_value* (*)(ely_value*, ely_value*, ely_value*, ely_value*))func_ptr;
+            ely_value (*f)(ely_value, ely_value, ely_value, ely_value) = 
+                (ely_value (*)(ely_value, ely_value, ely_value, ely_value))func_ptr;
             return f(args[0], args[1], args[2], args[3]);
         }
         default:
@@ -1310,22 +1465,23 @@ ely_value* ely_invoke(void* func_ptr, ely_value** args, int argc) {
     }
 }
 
-ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_value** args, int argc) {
-    if (!obj || !method_name) return ely_value_new_null();
+ely_value ely_value_call_method(ely_value obj, const char* method_name, ely_value* args, int argc) {
+    int obj_type = ely_get_type(obj);
+    void* raw_obj = ELY_UNBOX_PTR(obj);
 
-    if (obj->type == ely_VALUE_ARRAY) {
-        arr* a = obj->u.array_val;
+    if (obj_type == ely_VALUE_ARRAY) {
+        arr* a = (arr*)raw_obj;
         if (strcmp(method_name, "push") == 0 && argc == 1) {
             arr_push(a, args[0]);
             return ely_value_new_null();
         }
         else if (strcmp(method_name, "pop") == 0) {
             if (argc == 0) {
-                ely_value* val = arr_pop_value(a);
-                return val ? val : ely_value_new_null();
+                ely_value val = arr_pop_value(a);
+                return val; // возвращает упакованный ely_value напрямую
             }
-            else if (argc == 1 && args[0]->type == ely_VALUE_INT) {
-                int idx = (int)args[0]->u.int_val;
+            else if (argc == 1 && ely_get_type(args[0]) == ely_VALUE_INT) {
+                int idx = (int)ELY_UNBOX_INT(args[0]);
                 int res = arr_remove_index(a, idx);
                 return ely_value_new_int(res);
             }
@@ -1334,8 +1490,8 @@ ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_va
             return ely_value_new_int(arr_len(a));
         }
         else if (strcmp(method_name, "insert") == 0 && argc == 2) {
-            if (args[0]->type == ely_VALUE_INT) {
-                int idx = (int)args[0]->u.int_val;
+            if (ely_get_type(args[0]) == ely_VALUE_INT) {
+                int idx = (int)ELY_UNBOX_INT(args[0]);
                 arr_insert(a, idx, args[1]);
                 return ely_value_new_null();
             }
@@ -1350,8 +1506,8 @@ ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_va
         }
     }
 
-    else if (obj->type == ely_VALUE_STRING) {
-        const char* s = obj->u.string_val;
+    else if (obj_type == ely_VALUE_STRING) {
+        const char* s = (const char*)raw_obj;
         if (!s) return ely_value_new_null();
 
         if (strcmp(method_name, "len") == 0 && argc == 0)
@@ -1365,21 +1521,24 @@ ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_va
             return ely_value_new_string(ely_str_concat(s, arg_str));
         }
         else if (strcmp(method_name, "substr") == 0 && argc == 2) {
-            if (args[0]->type == ely_VALUE_INT && args[1]->type == ely_VALUE_INT)
-                return ely_value_new_string(ely_str_substr(s, (int)args[0]->u.int_val, (int)args[1]->u.int_val));
+            if (ely_get_type(args[0]) == ely_VALUE_INT && ely_get_type(args[1]) == ely_VALUE_INT)
+                return ely_value_new_string(ely_str_substr(s, (int)ELY_UNBOX_INT(args[0]), (int)ELY_UNBOX_INT(args[1])));
         }
         else if (strcmp(method_name, "replace") == 0 && argc == 2) {
-            if (args[0]->type == ely_VALUE_STRING && args[1]->type == ely_VALUE_STRING)
-                return ely_value_new_string(ely_str_replace(s, args[0]->u.string_val, args[1]->u.string_val));
+            if (ely_get_type(args[0]) == ely_VALUE_STRING && ely_get_type(args[1]) == ely_VALUE_STRING) {
+                char* target = (char*)ELY_UNBOX_PTR(args[0]);
+                char* replacement = (char*)ELY_UNBOX_PTR(args[1]);
+                return ely_value_new_string(ely_str_replace(s, target, replacement));
+            }
         }
         else if (strcmp(method_name, "cmp") == 0 && argc == 1) {
-            if (args[0]->type == ely_VALUE_STRING)
-                return ely_value_new_int(ely_str_cmp(s, args[0]->u.string_val));
+            if (ely_get_type(args[0]) == ely_VALUE_STRING)
+                return ely_value_new_int(ely_str_cmp(s, (char*)ELY_UNBOX_PTR(args[0])));
         }
     }
 
-    else if (obj->type == ely_VALUE_OBJECT) {
-        dict* d = obj->u.object_val;
+    else if (obj_type == ely_VALUE_OBJECT) {
+        dict* d = (dict*)raw_obj;
         if (!d) return ely_value_new_null();
 
         if (strcmp(method_name, "keys") == 0 && argc == 0) {
@@ -1404,28 +1563,6 @@ ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_va
     }
 
     return ely_value_new_null();
-}
-
-long long ely_value_as_int(ely_value* v) {
-    if (!v) return 0;
-    switch (v->type) {
-        case ely_VALUE_INT:    return v->u.int_val;
-        case ely_VALUE_DOUBLE: return (long long)v->u.double_val;
-        case ely_VALUE_BOOL:   return v->u.bool_val ? 1 : 0;
-        case ely_VALUE_STRING: return ely_str_to_int(v->u.string_val);
-        default:               return 0;
-    }
-}
-
-double ely_value_as_double(ely_value* v) {
-    if (!v) return 0.0;
-    switch (v->type) {
-        case ely_VALUE_DOUBLE: return v->u.double_val;
-        case ely_VALUE_INT:    return (double)v->u.int_val;
-        case ely_VALUE_BOOL:   return v->u.bool_val ? 1.0 : 0.0;
-        case ely_VALUE_STRING: return ely_str_to_double(v->u.string_val);
-        default:               return 0.0;
-    }
 }
 
 // ------------------------ Расширенное время ------------------------
@@ -1546,22 +1683,26 @@ char* ely_file_read_all_simple(const char* path) {
     return data;
 }
 
-ely_value* ely_to_int(ely_value* v) {
+ely_value ely_to_int(ely_value v) {
     return ely_value_new_int(ely_value_as_int(v));
 }
-ely_value* ely_to_double(ely_value* v) {
+
+ely_value ely_to_double(ely_value v) {
     return ely_value_new_double(ely_value_as_double(v));
 }
-ely_value* ely_to_string(ely_value* v) {
-    return ely_value_new_string(ely_value_to_string(v));
+
+ely_value ely_to_string(ely_value v) {
+    // Если ely_value_to_string возвращает char*, упаковываем его
+    return ely_value_new_string(ely_value_to_string(v)); 
 }
-ely_value* ely_make_arr(ely_value* elem) {
+
+ely_value ely_make_arr(ely_value elem) {
     arr* a = arr_new();
-    arr_push(a, elem);
+    arr_push(a, elem); // arr_push теперь принимает uint64_t по значению
     return ely_value_new_array(a);
 }
-ely_value* ely_dyn_arr(ely_value* elem) {
-    // Аналогично makeArr, динамический массив в рантайме не отличается
+
+ely_value ely_dyn_arr(ely_value elem) {
     arr* a = arr_new();
     arr_push(a, elem);
     return ely_value_new_array(a);

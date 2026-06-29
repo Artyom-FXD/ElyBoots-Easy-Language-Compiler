@@ -2,35 +2,51 @@
 #define ely_RUNTIME_H
 
 #include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+typedef uint64_t ely_value;
+
 #include "collections.h"
 #include "ely_gc.h"
 
-typedef enum {
-    ely_VALUE_NULL,
-    ely_VALUE_BOOL,
-    ely_VALUE_INT,
-    ely_VALUE_DOUBLE,
-    ely_VALUE_STRING,
-    ely_VALUE_ARRAY,
-    ely_VALUE_OBJECT,
-    ely_VALUE_FUNCTION
-} ely_value_type;
+/* ============================================================================
+ * Ely-boxing (ExBoxing + Float Self-Tagging)
+ * ============================================================================ */
 
-typedef struct ely_value {
-    ely_value_type type;
-    union {
-        int bool_val;
-        long long int_val;
-        double double_val;
-        char* string_val;
-        arr* array_val;
-        dict* object_val;
-        struct {
-            void* func_ptr;
-            int is_native;
-        } function;
-    } u;
-} ely_value;
+#define ELY_TAG_MASK          0x7ULL
+
+// Основные теги (Младшие 3 бита)
+#define ELY_TAG_PTR           0x0ULL  // 000 - Прямой указатель на кучу (Выровнен по 8 байт)
+#define ELY_TAG_INT           0x1ULL  // 001 - Маленькое целое число (Smi / Fixnum, 61 бит)
+#define ELY_TAG_STR0          0x2ULL  // 010 - Immediate-строка (Длина до 7 байт прямо в значении)
+#define ELY_TAG_SPECIAL       0x3ULL  // 011 - Константы и мелкие типы (Bool, Null, Char, Byte)
+// Теги 100, 101, 110, 111 (Бит 2 выставлен в 1) заняты под нативные Float
+
+// Подтеги для ELY_TAG_SPECIAL (Биты 3-7)
+#define ELY_SUBTAG_MASK       (0x1FULL << 3)
+#define ELY_SUBTAG_BOOL       (0x00ULL << 3)
+#define ELY_SUBTAG_NULL       (0x01ULL << 3)
+#define ELY_SUBTAG_UNDEFINED  (0x02ULL << 3)
+#define ELY_SUBTAG_CHAR       (0x03ULL << 3)
+#define ELY_SUBTAG_BYTE       (0x04ULL << 3)
+
+// Фиксированные константы рантайм-значений
+#define ELY_VAL_FALSE         (ELY_TAG_SPECIAL | ELY_SUBTAG_BOOL | (0ULL << 8))
+#define ELY_VAL_TRUE          (ELY_TAG_SPECIAL | ELY_SUBTAG_BOOL | (1ULL << 8))
+#define ELY_VAL_NULL          (ELY_TAG_SPECIAL | ELY_SUBTAG_NULL)
+#define ELY_VAL_UNDEFINED     (ELY_TAG_SPECIAL | ELY_SUBTAG_UNDEFINED)
+
+#define ELY_VAL_MASK       0x0000FFFFFFFFFFFFULL  // Lower 48 bits for pointer payloads
+#define ELY_TAG_BOOL       0xFFFC000000000000ULL  // Specific tag for booleans
+#define ELY_TAG_STRING     0xFFFD000000000000ULL  // Tag for heap-allocated strings
+#define ELY_TAG_PTR        0xFFFB000000000000ULL
+
+#define ELY_PAYLOAD_MASK   0x00FFFFFFFFFFFFFFULL // Нижние 7 байт под данные/указатели
+#define ELY_TAG_MASK       0xFF00000000000000ULL // Верхний 1 байт под тег
+#define ELY_TAG_NULL       0xFF00000000000000ULL // Наш замаскированный NULL
+
+#define ELY_UNBOX_PTR(v)   ((void*)((v) & ELY_PAYLOAD_MASK))
+#define ELY_UNBOX_INT(v)   ((int64_t)ely_value_as_int(v))
 
 typedef struct ely_class ely_class;
 struct ely_class {
@@ -45,6 +61,26 @@ typedef struct {
     const char** field_names;
     const char** field_types;
 } ely_class_info;
+
+typedef enum {
+    GC_OBJ_STRING,
+    GC_OBJ_VALUE,
+    GC_OBJ_ARRAY,
+    GC_OBJ_OBJECT,
+    GC_OBJ_DOUBLE
+} gc_obj_type;
+
+typedef enum {
+    ely_VALUE_NULL = 0,
+    ely_VALUE_BOOL,
+    ely_VALUE_INT,
+    ely_VALUE_DOUBLE,
+    ely_VALUE_STRING,
+    ely_VALUE_ARRAY,
+    ely_VALUE_OBJECT,
+    ely_VALUE_FUNCTION, // <-- Тот самый потерявшийся тип для рефлексии и методов
+    ely_VALUE_UNKNOWN
+} ely_type;
 
 ely_class_info* ely_get_class_info(const char* name);
 
@@ -65,66 +101,195 @@ typedef unsigned char   ely_ubyte;
 typedef int             ely_bool;
 typedef char*           ely_str;
 
-// Конструкторы ely_value
-ely_value* ely_value_new_null(void);
-ely_value* ely_value_new_bool(int b);
-ely_value* ely_value_new_int(long long i);
-ely_value* ely_value_new_double(double d);
-ely_value* ely_value_new_string(const char* s);
-ely_value* ely_value_new_array(arr* a);
-ely_value* ely_value_new_object(dict* d);
-void ely_value_free(ely_value* v);
+/* ============================================================================
+ * Предикаты типов (Type Checking)
+ * ============================================================================ */
 
-// Операции над ely_value
-int ely_value_as_bool(ely_value* v);
-ely_value* ely_value_index(ely_value* v, ely_value* index);
-ely_value* ely_value_get_key(ely_value* v, const char* key);
-void ely_value_set_key(ely_value* v, const char* key, ely_value* value);
-void ely_value_set_index(ely_value* v, ely_value* index, ely_value* value);
-char* ely_value_to_json(ely_value* v);
-ely_value* ely_value_from_json(const char* json, size_t* pos);
-char* ely_value_to_string(ely_value* v);
+inline int ely_get_type(ely_value v);
 
-ely_value* ely_value_add(ely_value* a, ely_value* b);
-ely_value* ely_value_sub(ely_value* a, ely_value* b);
-ely_value* ely_value_mul(ely_value* a, ely_value* b);
-ely_value* ely_value_div(ely_value* a, ely_value* b);
-ely_value* ely_value_mod(ely_value* a, ely_value* b);
-ely_value* ely_value_eq(ely_value* a, ely_value* b);
-ely_value* ely_value_ne(ely_value* a, ely_value* b);
-ely_value* ely_value_lt(ely_value* a, ely_value* b);
-ely_value* ely_value_le(ely_value* a, ely_value* b);
-ely_value* ely_value_gt(ely_value* a, ely_value* b);
-ely_value* ely_value_ge(ely_value* a, ely_value* b);
-ely_value* ely_value_and(ely_value* a, ely_value* b);
-ely_value* ely_value_or(ely_value* a, ely_value* b);
-ely_value* ely_value_not(ely_value* a);
-ely_value* ely_value_neg(ely_value* a);
+static inline bool ely_is_ptr(ely_value v) {
+    // Если младшие 3 бита равны 000 и это не чистый ноль — это указатель Клетки
+    return (v & ELY_TAG_MASK) == ELY_TAG_PTR && v != 0;
+}
+
+static inline bool ely_is_int(ely_value v) {
+    return (v & ELY_TAG_MASK) == ELY_TAG_INT;
+}
+
+static inline bool ely_is_double(ely_value v) {
+    // Быстрая проверка: если горит бит 2, это инлайновый double.
+    // (Если бит не горит, double лежит в куче как объект, проверится через ely_is_ptr)
+    return (v & 0x4ULL) != 0;
+}
+
+static inline bool ely_is_bool(ely_value v) {
+    return (v == ELY_VAL_TRUE || v == ELY_VAL_FALSE);
+}
+
+static inline bool ely_is_null(ely_value v) {
+    return v == ELY_VAL_NULL;
+}
+
+static inline bool ely_is_char(ely_value v) {
+    return (v & ELY_TAG_MASK) == ELY_TAG_SPECIAL && (v & ELY_SUBTAG_MASK) == ELY_SUBTAG_CHAR;
+}
+
+static inline bool ely_is_byte(ely_value v) {
+    return (v & ELY_TAG_MASK) == ELY_TAG_SPECIAL && (v & ELY_SUBTAG_MASK) == ELY_SUBTAG_BYTE;
+}
+
+/* ============================================================================
+ * Инлайн-функции упаковки (Boxing)
+ * ============================================================================ */
+
+static inline ely_value ely_box_ptr(void* p) {
+    // В силу 8-байтового выравнивания, младшие биты адреса уже равны 000
+    return (ely_value)(p);
+}
+
+static inline ely_value ely_box_int(int64_t i) {
+    // Сдвигаем число на 3 бита влево, освобождая место под тег 001
+    return (((ely_value)i) << 3) | ELY_TAG_INT;
+}
+
+// Прототип функции медленного пути для экстремальных Double (будет реализован в ely_runtime.c)
+ely_value ely_value_new_double_boxed(double d);
+
+static inline ely_value ely_box_double(double d) {
+    union { double d; uint64_t u; } cast;
+    cast.d = d;
+    // Если бит 2 равен 1, число безопасно встраивается в архитектуру (Fast Path)
+    if ((cast.u & 0x4ULL) != 0) {
+        return cast.u;
+    }
+    // Если бит 2 равен 0 (коллизия с тегами), пакуем число в кучу (Slow Path)
+    return ely_value_new_double_boxed(d);
+}
+
+static inline ely_value ely_box_bool(bool b) {
+    return b ? ELY_VAL_TRUE : ELY_VAL_FALSE;
+}
+
+static inline ely_value ely_box_null(void) {
+    return ELY_VAL_NULL;
+}
+
+static inline ely_value ely_box_char(char c) {
+    return ELY_TAG_SPECIAL | ELY_SUBTAG_CHAR | ((ely_value)(uint8_t)c << 8);
+}
+
+static inline ely_value ely_box_byte(uint8_t b) {
+    return ELY_TAG_SPECIAL | ELY_SUBTAG_BYTE | ((ely_value)b << 8);
+}
+
+/* ============================================================================
+ * Инлайн-функции распаковки (Unboxing)
+ * ============================================================================ */
+
+static inline void* ely_unbox_ptr(ely_value v) {
+    // Маска больше не нужна! Т.к. тег равен 000, значение v — это и есть чистый адрес
+    return (void*)(v);
+}
+
+static inline int64_t ely_unbox_int(ely_value v) {
+    // Арифметический сдвиг вправо (знаковый) автоматически восстанавливает 
+    // отрицательные числа. Никаких ручных масок знака!
+    return ((int64_t)v) >> 3;
+}
+
+// Прототип функции медленного пути для распаковки Double из кучи
+double ely_value_as_double_slow(ely_value v);
+
+static inline double ely_unbox_double(ely_value v) {
+    union { uint64_t u; double d; } cast;
+    cast.u = v;
+    return cast.d;
+}
+
+static inline bool ely_unbox_bool(ely_value v) {
+    return v == ELY_VAL_TRUE;
+}
+
+static inline char ely_unbox_char(ely_value v) {
+    return (char)(v >> 8);
+}
+
+static inline uint8_t ely_unbox_byte(ely_value v) {
+    return (uint8_t)(v >> 8);
+}
+
+/* Внедряем в блок инлайнов ely_runtime.h */
+
+static inline ely_value ely_box_inline_str(const char* s, size_t len) {
+    // Записываем тег строки 010 и сдвинутую длину в биты 3-5
+    ely_value v = ELY_TAG_STR0 | (len << 3);
+    
+    // Побайтово копируем строку в старшие биты, начиная с 6 бита
+    for (size_t i = 0; i < len; i++) {
+        v |= ((ely_value)(uint8_t)s[i]) << (6 + (i * 8));
+    }
+    return v;
+}
+
+static inline void ely_unbox_inline_str(ely_value v, char* buf) {
+    size_t len = (v >> 3) & 0x7ULL; // Извлекаем длину из бит 3-5
+    
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (char)((v >> (6 + (i * 8))) & 0xFFULL);
+    }
+    buf[len] = '\0'; // Гарантируем null-терминатор для Си-функций
+}
+
+/* ============================================================================
+ * Сигнатуры стандартных функций рантайма (Передача по значению)
+ * ============================================================================ */
+ely_value ely_to_int(ely_value v);
+ely_value ely_to_double(ely_value v);
+ely_value ely_to_string(ely_value v);
+
+// Конструкторы объектов Ely (Возвращают упакованное значение прямо в регистре RAX)
+ely_value ely_value_new_null(void);
+ely_value ely_value_new_bool(int b);
+ely_value ely_value_new_int(long long i);
+ely_value ely_value_new_double(double d);
+ely_value ely_value_new_string(const char* s);
+ely_value ely_value_new_array(arr* a);
+ely_value ely_value_new_object(dict* d);
+
+// Интерфейс работы с динамическими объектами
+int ely_value_as_bool(ely_value v);
+ely_value ely_value_index(ely_value v, ely_value index);
+ely_value ely_value_get_key(ely_value v, const char* key);
+void ely_value_set_key(ely_value v, const char* key, ely_value value);
+void ely_value_set_index(ely_value v, ely_value index, ely_value value);
+char* ely_value_to_json(ely_value v);
+ely_value ely_value_from_json(const char* json, size_t* pos);
+char* ely_value_to_string(ely_value v);
+
+// Математическое ядро рантайма
+ely_value ely_value_add(ely_value a, ely_value b);
+ely_value ely_value_sub(ely_value a, ely_value b);
+ely_value ely_value_mul(ely_value a, ely_value b);
+ely_value ely_value_div(ely_value a, ely_value b);
+ely_value ely_value_mod(ely_value a, ely_value b);
+ely_value ely_value_eq(ely_value a, ely_value b);
+ely_value ely_value_ne(ely_value a, ely_value b);
+ely_value ely_value_lt(ely_value a, ely_value b);
+ely_value ely_value_le(ely_value a, ely_value b);
+ely_value ely_value_gt(ely_value a, ely_value b);
+ely_value ely_value_ge(ely_value a, ely_value b);
+ely_value ely_value_and(ely_value a, ely_value b);
+ely_value ely_value_or(ely_value a, ely_value b);
+ely_value ely_value_not(ely_value a);
+ely_value ely_value_neg(ely_value a);
 
 // ------------------------ Консоль ------------------------
-void ely_print(const char* str);
-void ely_print_int(ely_int n);
-void ely_print_uint(ely_uint n);
-void ely_print_more(ely_more n);
-void ely_print_umore(ely_umore n);
-void ely_print_flt(ely_flt f);
-void ely_print_double(ely_double d);
-void ely_print_bool(ely_bool b);
-void ely_print_char(ely_char c);
-void ely_print_byte(ely_byte b);
-void ely_print_ubyte(ely_ubyte b);
-void ely_println(const char* str);
-void ely_println_int(ely_int n);
-void ely_println_uint(ely_uint n);
-void ely_println_more(ely_more n);
-void ely_println_umore(ely_umore n);
-void ely_println_flt(ely_flt f);
-void ely_println_double(ely_double d);
-void ely_println_bool(ely_bool b);
-void ely_println_char(ely_char c);
-void ely_println_byte(ely_byte b);
-void ely_println_ubyte(ely_ubyte b);
-void ely_println_str(const char* str);
+void ely_print_int(ely_value v);
+void ely_print_byte(ely_value v);
+void ely_print_char(ely_value v);
+void ely_print_bool(ely_value v);
+void ely_print_double(ely_value v);
+void ely_println_str(ely_value v);
 
 ely_str ely_input(void);
 ely_str ely_input_prompt(const char* prompt);
@@ -216,47 +381,47 @@ void  ely_free(void* ptr);
 // ------------------------ JSON парсинг ------------------------
 dict* ely_dictify(const char* json);
 
-// ------------------------ Обёртки для массивов (ely_value*) ------------------------
-void ely_array_push(ely_value* arr, ely_value* elem);
-ely_value* ely_array_pop(ely_value* arr);
-size_t ely_array_len(ely_value* arr);
-ely_value* ely_array_get(ely_value* arr, size_t index);
-void ely_array_set(ely_value* arr, size_t index, ely_value* elem);
-void ely_array_insert(ely_value* arr, size_t index, ely_value* elem);
-int ely_array_remove_value(ely_value* arr, ely_value* value);
-int ely_array_remove_index(ely_value* arr, size_t index);
-int ely_array_index(ely_value* arr, ely_value* value);
+// ------------------------ Обёртки для массивов (ely_value) ------------------------
+void ely_array_push(ely_value arr, ely_value elem);
+ely_value ely_array_pop(ely_value arr);
+size_t ely_array_len(ely_value arr);
+ely_value ely_array_get(ely_value arr, size_t index);
+void ely_array_set(ely_value arr, size_t index, ely_value elem);
+void ely_array_insert(ely_value arr, size_t index, ely_value elem);
+int ely_array_remove_value(ely_value arr, ely_value value);
+int ely_array_remove_index(ely_value arr, size_t index);
+int ely_array_index(ely_value arr, ely_value value);
 
-// ------------------------ Обёртки для словарей (ely_value*) ------------------------
-ely_value* ely_dict_get(ely_value* dict, ely_value* key);
-void ely_dict_set(ely_value* dict, ely_value* key, ely_value* value);
-void ely_dict_del(ely_value* dict, ely_value* key);
-int ely_dict_has(ely_value* dict, ely_value* key);
-ely_value* ely_dict_keys(ely_value* dict);
-char* ely_array_to_json(ely_value* arr);
-char* ely_dict_to_json(ely_value* dict);
+// ------------------------ Обёртки для словарей (ely_value) ------------------------
+ely_value ely_dict_get(ely_value dict, ely_value key);
+void ely_dict_set(ely_value dict, ely_value key, ely_value value);
+void ely_dict_del(ely_value dict, ely_value key);
+int ely_dict_has(ely_value dict, ely_value key);
+ely_value ely_dict_keys(ely_value dict);
+char* ely_array_to_json(ely_value arr);
+char* ely_dict_to_json(ely_value dict);
 
 // Совместимость со старыми именами (временные)
-void del(ely_value* dict, char* key);
-int has(ely_value* dict, char* key);
-ely_value* keys(ely_value* dict);
-char* toJson(ely_value* dict);
+void del(ely_value dict, char* key);
+int has(ely_value dict, char* key);
+ely_value keys(ely_value dict);
+char* toJson(ely_value dict);
 
 // other
-ely_bool isType(ely_value* value, const char* type_name);
-ely_bool isNull(ely_value* value);
-ely_bool isIn(ely_value* value, arr* in);
+ely_bool isType(ely_value value, const char* type_name);
+ely_bool isNull(ely_value value);
+ely_bool isIn(ely_value value, arr* in);
 
 // ------------------------ Рефлексия ------------------------
-char* ely_typeof(ely_value* v);
-ely_value* ely_value_get_fields(ely_value* v);
-ely_value* ely_value_get_methods(ely_value* v);
-ely_value* ely_value_call_method(ely_value* obj, const char* method_name, ely_value** args, int argc);
-ely_value* ely_value_new_function(void* func_ptr);
-void ely_value_set_method(ely_value* obj, const char* name, void* func_ptr);
+char* ely_typeof(ely_value v);
+ely_value ely_value_get_fields(ely_value v);
+ely_value ely_value_get_methods(ely_value v);
+ely_value ely_value_call_method(ely_value obj, const char* method_name, ely_value* args, int argc); // args теперь массив из ely_value (одна звездочка)
+ely_value ely_value_new_function(void* func_ptr);
+void ely_value_set_method(ely_value obj, const char* name, void* func_ptr);
 
-long long ely_value_as_int(ely_value* v);
-double ely_value_as_double(ely_value* v);
+long long ely_value_as_int(ely_value v);
+double ely_value_as_double(ely_value v);
 
 void ely_chdir_to_exe_dir(void);
 
@@ -270,9 +435,6 @@ ely_int ely_rand_int(void);
 ely_int ely_rand_int_range(ely_int min, ely_int max);
 ely_bool ely_rand_bool(void);
 
-ely_value* ely_to_int(ely_value* v);
-ely_value* ely_to_double(ely_value* v);
-ely_value* ely_to_string(ely_value* v);
 ely_value* ely_make_arr(ely_value* elem);
 ely_value* ely_dyn_arr(ely_value* elem);
 
