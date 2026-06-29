@@ -46,6 +46,18 @@ extern "C" {
 #endif
 
 /* ============================================================================
+ * GigaCage - клетка | GigaCage - cell
+ * ============================================================================ */
+#ifndef GC_DEFAULT_CAGE_SIZE_GB
+#define GC_DEFAULT_CAGE_SIZE_GB 8ULL // 8 GB (U CAN EDIT IT FOR UR SCRIPTS)
+#endif
+
+extern uintptr_t g_cage_base;
+extern uintptr_t g_cage_limit;
+
+void gc_init_cage(size_t custom_size_bytes);
+
+/* ============================================================================
  * Типы объектов, распознаваемые сборщиком (для корректного обхода ссылок)
  * ============================================================================ */
 
@@ -166,14 +178,14 @@ void gc_collect_old(void);
  * 
  * @param ptr Указатель на переменную, хранящую ссылку на управляемый объект.
  */
-void gc_add_root(void** ptr);
+void gc_add_root(uint64_t* ptr);
 
 /**
  * @brief Удаляет ранее зарегистрированный локальный корень.
  * 
  * @param ptr Указатель на ту же переменную, что была передана в gc_add_root.
  */
-void gc_remove_root(void** ptr);
+void gc_remove_root(uint64_t* ptr);
 
 /**
  * @brief Регистрирует глобальный корень (глобальную или статическую переменную).
@@ -291,13 +303,12 @@ void gc_set_old_threshold(int percent);
 #if defined(__cplusplus)
 #define GC_AUTO_ROOT(var) \
     struct gc_auto_root_##var { \
-        void** ptr; \
-        gc_auto_root_##var(void** p) : ptr(p) { gc_add_root(ptr); } \
+        uint64_t* ptr; \
+        gc_auto_root_##var(uint64_t* p) : ptr(p) { gc_add_root(ptr); } \
         ~gc_auto_root_##var() { gc_remove_root(ptr); } \
-    } _auto_root_##var((void**)&(var))
+    } _auto_root_##var(&(var))
 #else
 /* В чистом C макрос не реализуем, требуется ручное управление */
-#define GC_AUTO_ROOT(var) gc_add_root((void**)&(var))
 #endif
 #endif
 

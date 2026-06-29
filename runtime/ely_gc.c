@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdalign.h>
+#include <string.h>
 #include "ely_runtime.h"
 
 #ifdef _WIN32
@@ -66,6 +67,246 @@ static uint64_t young_collections = 0;
 static uint64_t old_collections = 0;
 static bool gc_enabled = false;
 static int old_threshold_percent = 75;
+
+// GigaCage
+uintptr_t gc_cage_base = 0;
+uintptr_t gc_cage_limit = 0;
+static char* cage_brk = NULL;
+
+/* ============================================================================
+ * GIGA CAGE
+ * ============================================================================ */
+void gc_init_cage(size_t custom_size_bytes) {
+    if (gc_cage_base != 0) return;
+    size_t cage_size = custom_size_bytes > 0 ? custom_size_bytes : (GC_DEFAULT_CAGE_SIZE_GB * 1024ULL * 1024ULL * 1024ULL);
+
+#ifdef _WIN32
+    gc_cage_base = (uintptr_t)VirtualAlloc(NULL, cage_size, MEM_RESERVE, PAGE_NOACCESS);
+#else
+    gc_cage_base = (uintptr_t)mmap(NULL, cage_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if ((void*)g_cage_base == MAP_FAILED) g_cage_base = 0;
+#endif
+    if (!gc_cage_base) {
+        fprintf(stderr, "[ELYGC] FATAL ERROR: FAILED TO RESERVE %llu MB FOR GIGACAGE ADRESS SPACE\n", (unsigned long long)(cage_size / (1024 * 1024)));
+        exit(1);
+    }
+
+    g_cage_limit = gc_cage_base + cage_size;
+    cage_brk = (char*)gc_cage_base;
+
+    printf("[ELYGC] GigaCage initialized. Base: 0x%llx, Limit: 0x%llx (%.2f GB reserved)\n",
+            (unsigned long long)g_cage_base,
+            (unsigned long long)g_cage_limit,
+            (double)(cage_size / (1024.0 * 1024.0 * 1024.0))
+    );
+}
+
+/* ============================================================================
+    Ely-boxing
+ * ============================================================================ */
+
+static inline uint8_t get_heap_obj_type(void* ptr) {
+    gc_header_t* hdr = (gc_header_t*)((char*)ptr - HEADER_SIZE);
+    return hdr->obj_type;
+}
+
+ely_value ely_to_int(ely_value v) {
+    if (ely_is_int(v)) return v;
+    
+    if (ely_is_double(v)) {
+        return ely_box_int((int64_t)ely_unbox_double(v));
+    }
+    
+    if (ely_is_bool(v)) {
+        return ely_box_int(ely_unbox_bool(v) ? 1 : 0);
+    }
+    
+    // Если это строка из кучи
+    if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
+        const char* str = (const char*)ely_unbox_ptr(v);
+        return ely_box_int((int64_t)strtoll(str, NULL, 10));
+    }
+    
+    // Если это инлайновая строка Tier 0 (реализация ниже в п.3)
+    if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        char buf[8];
+        ely_unbox_inline_str(v, buf);
+        return ely_box_int((int64_t)strtoll(buf, NULL, 10));
+    }
+    
+    return ely_box_int(0);
+}
+
+ely_value ely_to_double(ely_value v) {
+    if (ely_is_double(v)) return v;
+    
+    if (ely_is_int(v)) {
+        return ely_box_double((double)ely_unbox_int(v));
+    }
+    
+    if (ely_is_bool(v)) {
+        return ely_box_double(ely_unbox_bool(v) ? 1.0 : 0.0);
+    }
+    
+    if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
+        const char* str = (const char*)ely_unbox_ptr(v);
+        return ely_box_double(strtod(str, NULL));
+    }
+    
+    if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        char buf[8];
+        ely_unbox_inline_str(v, buf);
+        return ely_box_double(strtod(buf, NULL));
+    }
+    
+    return ely_box_double(0.0);
+}
+
+char* ely_value_to_string(ely_value v) {
+    char* buf = malloc(64); // Временный буфер под примитивы
+    if (ely_is_int(v)) {
+        snprintf(buf, 64, "%lld", (long long)ely_unbox_int(v));
+    } else if (ely_is_double(v)) {
+        snprintf(buf, 64, "%g", ely_unbox_double(v));
+    } else if (ely_is_bool(v)) {
+        snprintf(buf, 64, ely_unbox_bool(v) ? "true" : "false");
+    } else if (ely_is_null(v)) {
+        snprintf(buf, 64, "null");
+    } else if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
+        free(buf);
+        return strdup((const char*)ely_unbox_ptr(v));
+    } else if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        ely_unbox_inline_str(v, buf);
+    } else {
+        snprintf(buf, 64, "[object]");
+    }
+    return buf;
+}
+
+ely_value ely_make_arr(ely_value elem) {
+    // Создаем внутреннюю структуру массива
+    arr* a = arr_new(); 
+    
+    // Пушим элемент (теперь elem — это не указатель, а само 64-битное значение)
+    arr_push(a, elem); 
+    
+    // Упаковываем указатель на массив в ely_value
+    return ely_box_ptr(a);
+}
+
+ely_value ely_dyn_arr(ely_value elem) {
+    // В новой архитектуре динамический массив ничем не отличается
+    return ely_make_arr(elem);
+}
+
+/* ============================================================================
+ * ely dynamic ops
+ * ============================================================================ */
+
+/* ely_runtime.c */
+
+ely_value ely_value_add(ely_value a, ely_value b) {
+    // FAST PATH: Оба операнда — целые числа (Smi)
+    if ((a & ELY_TAG_MASK) == ELY_TAG_INT && (b & ELY_TAG_MASK) == ELY_TAG_INT) {
+        // Битовый трюк: сложение двух задвинутых чисел выдаст лишний тег 0x1. 
+        // Просто вычитаем 1, чтобы восстановить тег ELY_TAG_INT (0x1)
+        return a + b - 1; 
+    }
+
+    // FAST PATH: Оба операнда — нативные Double (Бит 2 горит у обоих)
+    if (((a & 0x4ULL) != 0) && ((b & 0x4ULL) != 0)) {
+        union { ely_value u; double d; } va, vb, vres;
+        va.u = a; vb.u = b;
+        vres.d = va.d + vb.d;
+        if ((vres.u & 0x4ULL) != 0) return vres.u; // Результат тоже инлайновый double
+        return ely_value_new_double_boxed(vres.d);
+    }
+
+    // SLOW PATH: Смешанные типы (Int + Double, кучные Double или строки)
+    if (ely_is_double(a) || ely_is_double(b)) {
+        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
+        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
+        return ely_box_double(da + db);
+    }
+
+    return ely_box_int(0);
+}
+
+ely_value ely_value_sub(ely_value a, ely_value b) {
+    // FAST PATH: Оба операнда Int
+    if ((a & ELY_TAG_MASK) == ELY_TAG_INT && (b & ELY_TAG_MASK) == ELY_TAG_INT) {
+        // При вычитании теги аннулируются (1 - 1 = 0), поэтому прибавляем обратно 1
+        return a - b + 1;
+    }
+
+    if (ely_is_double(a) || ely_is_double(b)) {
+        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
+        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
+        return ely_box_double(da - db);
+    }
+    return ely_box_int(0);
+}
+
+ely_value ely_value_mul(ely_value a, ely_value b) {
+    // Для умножения распаковываем аппаратно через сдвиг, так как биты перемножаются сложнее
+    if (ely_is_int(a) && ely_is_int(b)) {
+        return ely_box_int(ely_unbox_int(a) * ely_unbox_int(b));
+    }
+    if (ely_is_double(a) || ely_is_double(b)) {
+        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
+        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
+        return ely_box_double(da * db);
+    }
+    return ely_box_int(0);
+}
+
+ely_value ely_value_eq(ely_value a, ely_value b) {
+    // Если битовые паттерны идентичны — они 100% равны (Int, Bool, Null, одинаковые указатели)
+    if (a == b) return ELY_VAL_TRUE;
+
+    // Сравнение строк (потенциально одна в куче, другая инлайновая)
+    bool a_str = (ely_is_ptr(a) && get_heap_obj_type(ely_unbox_ptr(a)) == GC_OBJ_STRING) || ((a & ELY_TAG_MASK) == ELY_TAG_STR0);
+    bool b_str = (ely_is_ptr(b) && get_heap_obj_type(ely_unbox_ptr(b)) == GC_OBJ_STRING) || ((b & ELY_TAG_MASK) == ELY_TAG_STR0);
+
+    if (a_str && b_str) {
+        char buf_a[64];
+        char buf_b[64];
+        
+        if ((a & ELY_TAG_MASK) == ELY_TAG_STR0) ely_unbox_inline_str(a, buf_a);
+        else strcpy(buf_a, (const char*)ely_unbox_ptr(a));
+
+        if ((b & ELY_TAG_MASK) == ELY_TAG_STR0) ely_unbox_inline_str(b, buf_b);
+        else strcpy(buf_b, (const char*)ely_unbox_ptr(b));
+
+        return strcmp(buf_a, buf_b) == 0 ? ELY_VAL_TRUE : ELY_VAL_FALSE;
+    }
+
+    return ELY_VAL_FALSE;
+}
+
+/* ============================================================================
+ * Strs inlining
+ * ============================================================================ */
+
+static inline ely_value ely_box_inline_str(const char* s, size_t len) {
+    // Записываем тег строки 010 и сдвинутую длину в биты 3-5
+    ely_value v = ELY_TAG_STR0 | (len << 3);
+    
+    // Побайтово копируем строку в старшие биты, начиная с 6 бита
+    for (size_t i = 0; i < len; i++) {
+        v |= ((ely_value)(uint8_t)s[i]) << (6 + (i * 8));
+    }
+    return v;
+}
+
+static inline void ely_unbox_inline_str(ely_value v, char* buf) {
+    size_t len = (v >> 3) & 0x7ULL; // Извлекаем длину из бит 3-5
+    
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (char)((v >> (6 + (i * 8))) & 0xFFULL);
+    }
+    buf[len] = '\0'; // Гарантируем null-терминатор для Си-функций
+}
 
 /* ============================================================================
  * Прототипы статических функций (чтобы избежать неявных объявлений)
@@ -237,7 +478,8 @@ static void* allocate_old(size_t size, gc_obj_type_t type) {
 
 static void* allocate_large(size_t size, gc_obj_type_t type) {
     size_t total = HEADER_SIZE + ALIGN_UP(size, GC_ALIGNMENT);
-    void* mem = os_alloc(total);
+    
+    void* mem = cage_alloc_segment(total); 
     if (!mem) return NULL;
 
     gc_header_t* hdr = (gc_header_t*)mem;
@@ -672,20 +914,38 @@ static void collect_old(void) {
  * Инициализация и завершение
  * ============================================================================ */
 
+static char* young_from_start = NULL;
+static char* young_from_limit = NULL;
+static char* young_alloc_ptr  = NULL;
+
 void gc_init(void) {
+    // Инициализируем Клетку. Передаем 0, чтобы активировать дефолтные 8 ГБ
+    gc_init_cage(0);
+
+    // Выделяем регион под Молодое Поколение (оба полупространства young_from и young_to)
     size_t young_total = 2 * YOUNG_SIZE;
-    young_from = os_alloc(young_total);
-    if (!young_from) { fprintf(stderr, "GC: failed to allocate young generation\n"); abort(); }
+    young_from = (char*)cage_alloc_segment(young_total); 
+    if (!young_from) { 
+        fprintf(stderr, "GC: failed to allocate young generation within GigaCage\n"); 
+        abort(); 
+    }
+    
     young_to = young_from + YOUNG_SIZE;
     young_top = young_from;
     young_limit = young_from + YOUNG_SIZE;
 
+    // Выделяем начальный регион под Старое Поколение внутри Клетки
     old_size = OLD_INITIAL_SIZE;
-    old_start = os_alloc(old_size);
-    if (!old_start) { fprintf(stderr, "GC: failed to allocate old generation\n"); abort(); }
+    old_start = (char*)cage_alloc_segment(old_size);
+    if (!old_start) { 
+        fprintf(stderr, "GC: failed to allocate old generation within GigaCage\n"); 
+        abort(); 
+    }
+    
     old_top = old_start;
     old_limit = old_start + old_size;
 
+    // Инициализация остального состояния (без изменений)
     old_free_list = NULL;
     large_objects = NULL;
     roots = NULL;
@@ -877,4 +1137,118 @@ static bool is_gc_managed(void* ptr) {
         if (header_to_ptr(curr) == ptr) return true;
     }
     return false;
+}
+
+/**
+ * @brief Посещает одну ячейку (слот), содержащую ely_value. 
+ * Если там упакован указатель на объект кучи, GC обновляет его (в случае переноса объекта).
+ */
+void gc_trace_value(ely_value* slot) {
+    ely_value v = *slot;
+
+    // Если это не указатель Клетки (число, bool, null) — сборщику мусора тут делать нечего
+    if (!ely_is_ptr(v)) {
+        return;
+    }
+
+    // Извлекаем чистый адрес объекта из битовой сетки
+    gc_header_t* old_hdr = (gc_header_t*)((char*)ely_unbox_ptr(v) - HEADER_SIZE);
+
+    // Проверяем, был ли объект уже скопирован (Forwarding pointer)
+    if (old_hdr->u.forwarding != NULL) {
+        // Объект уже перемещен, просто обновляем ячейку новым адресом
+        *slot = ely_box_ptr(header_to_ptr(old_hdr->u.forwarding));
+        return;
+    }
+
+    // Если объект лежит в молодом поколении и еще не скопирован — копируем его!
+    // (Логика твоей функции перемещения, например copy_to_survivor или аналогичной)
+    if ((char*)old_hdr >= young_from && (char*)old_hdr < young_limit) {
+        gc_header_t* new_hdr = gc_move_object(old_hdr); 
+        
+        // Записываем новый упакованный адрес обратно в ячейку
+        *slot = ely_box_ptr(header_to_ptr(new_hdr));
+    }
+}
+
+void gc_trace_roots(void) {
+    // Обходим локальные корни (стековые переменные)
+    for (size_t i = 0; i < roots_count; i++) {
+        gc_trace_value(roots[i]); // roots[i] имеет тип ely_value*
+    }
+
+    // Обходим глобальные переменные
+    for (size_t i = 0; i < global_roots_count; i++) {
+        gc_trace_value(global_roots[i]);
+    }
+}
+
+/* ely_gc.c */
+
+void gc_scan_object(gc_header_t* hdr) {
+    switch ((gc_obj_type_t)hdr->obj_type) {
+        
+        case GC_OBJ_ARRAY: {
+            // Извлекаем указатель на структуру массива из тела объекта
+            arr* a = (arr*)header_to_ptr(hdr);
+            
+            // Пробегаемся по всем элементам массива
+            // Каждый элемент a->data[i] — это теперь ely_value
+            for (size_t i = 0; i < a->size; i++) {
+                gc_trace_value(&a->data[i]); // Передаем адрес слота для обновления!
+            }
+            break;
+        }
+
+        case GC_OBJ_OBJECT: {
+            dict* d = (dict*)header_to_ptr(hdr);
+            // Пробегаемся по хэш-таблице словаря
+            for (size_t i = 0; i < d->capacity; i++) {
+                if (d->entries[i].is_active) {
+                    // Ключ-строка (указатель)
+                    gc_trace_value(&d->entries[i].key);
+                    // Значение (любой тип ely_value)
+                    gc_trace_value(&d->entries[i].value);
+                }
+            }
+            break;
+        }
+
+        case GC_OBJ_STRING:
+        case GC_OBJ_DOUBLE: // Наш новый кучный Double (Slow Path)
+            // У строк и сырых double внутри нет указателей на другие объекты кучи,
+            // их сканировать глубже не нужно.
+            break;
+    }
+}
+
+// Сканирование одного Ely-значения
+void gc_scan_value(ely_value v) {
+    // Если биты говорят, что это указатель на объект внутри GigaCage
+    if (ely_is_ptr(v)) {
+        void* ptr = (void*)ely_unbox_ptr(v);
+        gc_mark(ptr); // Маркируем сам объект в куче
+    }
+}
+
+// Сканирование массива (GC_OBJ_ARRAY)
+void gc_scan_array(arr* a) {
+    for (size_t i = 0; i < arr_len(a); i++) {
+        // Массив теперь хранит сырые 64-битные ely_value
+        ely_value elem = arr_get(a, i); 
+        gc_scan_value(elem);
+    }
+}
+
+// Сканирование словаря/объекта (GC_OBJ_OBJECT)
+void gc_scan_dict(dict* d) {
+    for (size_t i = 0; i < d->capacity; i++) {
+        // ИСПРАВЛЕНИЕ ОШИБКИ: используем buckets вместо entries
+        dict_entry* e = d->buckets[i]; 
+        while (e) {
+            gc_scan_value(e->key);   // На случай, если ключи динамические
+            gc_scan_value(e->value); // Маркируем значение под ключом
+            e = e->next;
+        }
+    }
 }
