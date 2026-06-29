@@ -18,7 +18,6 @@ class Lexer:
         self.keywords = {
             'cCode': TokenType.CCODE,
             'cppCode': TokenType.CPPCODE,
-            'var': TokenType.VAR,
             'using': TokenType.USING,
             'class': TokenType.CLASS,
             'struct': TokenType.STRUCT,
@@ -128,11 +127,20 @@ class Lexer:
 
             # cCode block
             if self.source[self.pos:self.pos+5] == 'cCode':
+                next_ch = self._peek(5)
+                # Проверяем, не является ли это частью идентификатора (например, cCode_var)
+                if next_ch and (next_ch.isalnum() or next_ch == '_'):
+                    self._read_identifier_or_keyword()
+                    continue
                 self._read_c_code()
                 continue
 
             # cppCode block
             if self.source[self.pos:self.pos+7] == 'cppCode':
+                next_ch = self._peek(7)
+                if next_ch and (next_ch.isalnum() or next_ch == '_'):
+                    self._read_identifier_or_keyword()
+                    continue
                 self._read_cpp_code()
                 continue
 
@@ -208,8 +216,6 @@ class Lexer:
     def _skip_comment(self) -> bool:
         """
         Skip a single-line (// ...) or multi-line (/* ... */) comment.
-
-        Пропускает однострочный (// ...) или многострочный (/* ... */) комментарий.
         """
         if self._peek() == '/' and self._peek(1) == '/':
             self._advance()
@@ -220,12 +226,16 @@ class Lexer:
         if self._peek() == '/' and self._peek(1) == '*':
             self._advance()
             self._advance()
+            closed = False  # ФИКС: контроль закрытия комментария
             while self.pos < len(self.source):
                 if self.source[self.pos] == '*' and self._peek(1) == '/':
                     self._advance()
                     self._advance()
+                    closed = True
                     break
                 self._advance()
+            if not closed:
+                self._error("multiline comment")
             return True
         return False
 
@@ -264,23 +274,73 @@ class Lexer:
 
     def _read_number(self):
         """
-        Read a numeric literal (integer or floating-point) and emit a NUMBER token.
-
-        Читает числовой литерал (целое или с плавающей точкой) и выдаёт токен NUMBER.
+        Read a numeric literal (integer, hex, binary, octal, float or scientific) and emit a NUMBER token.
         """
         start_col = self.col
         start_pos = self.pos
+        
+        if self.source[self.pos] == '0' and self.pos + 1 < len(self.source):
+            next_ch = self.source[self.pos + 1].lower()
+            
+            if next_ch == 'x':
+                self._advance() # 0
+                self._advance() # x
+                while self.pos < len(self.source) and (self.source[self.pos].isdigit() or self.source[self.pos].lower() in 'abcdef'):
+                    self._advance()
+                lexeme = self.source[start_pos:self.pos]
+                self._add_token(TokenType.NUMBER, lexeme, self.line, start_col, int(lexeme, 16))
+                return
+                
+            elif next_ch == 'b':
+                self._advance() # 0
+                self._advance() # b
+                while self.pos < len(self.source) and self.source[self.pos] in '01':
+                    self._advance()
+                lexeme = self.source[start_pos:self.pos]
+                self._add_token(TokenType.NUMBER, lexeme, self.line, start_col, int(lexeme, 2))
+                return
+                
+            elif next_ch == 'o':
+                self._advance() # 0
+                self._advance() # o
+                while self.pos < len(self.source) and self.source[self.pos] in '01234567':
+                    self._advance()
+                lexeme = self.source[start_pos:self.pos]
+                self._add_token(TokenType.NUMBER, lexeme, self.line, start_col, int(lexeme, 8))
+                return
+
         while self.pos < len(self.source) and self.source[self.pos].isdigit():
             self._advance()
+            
         if self._peek() == '.' and self._peek(1) and self._peek(1).isdigit():
-            self._advance()
+            self._advance() # .
             while self.pos < len(self.source) and self.source[self.pos].isdigit():
                 self._advance()
+                
+        if self._peek() in ('e', 'E'):
+            next_1 = self._peek(1)
+            next_2 = self._peek(2)
+            is_valid_exp = False
+            
+            if next_1 and next_1.isdigit():
+                is_valid_exp = True
+            elif next_1 in ('+', '-') and next_2 and next_2.isdigit():
+                is_valid_exp = True
+                
+            if is_valid_exp:
+                self._advance()  # e / E
+                if self._peek() in ('+', '-'):
+                    self._advance()
+                while self.pos < len(self.source) and self.source[self.pos].isdigit():
+                    self._advance()
+                    
         lexeme = self.source[start_pos:self.pos]
-        if '.' in lexeme:
+        
+        if '.' in lexeme or 'e' in lexeme or 'E' in lexeme:
             value = float(lexeme)
         else:
             value = int(lexeme)
+            
         self._add_token(TokenType.NUMBER, lexeme, self.line, start_col, value)
 
     def _read_string(self):
@@ -291,7 +351,7 @@ class Lexer:
         """
         start_col = self.col
         start_pos = self.pos
-        self._advance()  # opening quote
+        self._advance()
 
         chars = []
         escaped = False
@@ -336,39 +396,24 @@ class Lexer:
 
     def _read_fstring(self, quote_char):
         """
-        Read a single-line f-string literal and emit an FSTRING token.
-
-        Читает однострочный f-строковый литерал и выдаёт токен FSTRING.
+        Read a single-line f-string literal (f"..." or f'...') and emit an FSTRING token.
         """
+        start_line = self.line
         start_col = self.col
         start_pos = self.pos
-        self._advance()  # opening quote
+        
+        # Кавычка (quote_char) передана из tokenize(), поглощаем её
+        self._advance() 
 
-        chars = []
+        content_start = self.pos
+        depth = 0
         escaped = False
+        content_end = self.pos
 
         while self.pos < len(self.source):
             ch = self.source[self.pos]
 
             if escaped:
-                if ch == 'n':
-                    chars.append('\n')
-                elif ch == 't':
-                    chars.append('\t')
-                elif ch == 'r':
-                    chars.append('\r')
-                elif ch == '"':
-                    chars.append('"')
-                elif ch == "'":
-                    chars.append("'")
-                elif ch == '\\':
-                    chars.append('\\')
-                elif ch == '{':
-                    chars.append('{')
-                elif ch == '}':
-                    chars.append('}')
-                else:
-                    chars.append('\\' + ch)
                 escaped = False
                 self._advance()
                 continue
@@ -378,116 +423,146 @@ class Lexer:
                 self._advance()
                 continue
 
-            if ch == quote_char:
+            if ch == '\n':
+                self._error("unterminated f-string literal")
+
+            if ch == '{':
+                depth += 1
                 self._advance()
-                break
-
-            chars.append(ch)
-            self._advance()
-        else:
-            self._error("f-string literal")
-
-        raw_lexeme = self.source[start_pos:self.pos]
-        value = ''.join(chars)
-        self._add_token(TokenType.FSTRING, raw_lexeme, self.line, start_col, value)
-
-    def _read_multiline_string(self):
-        """
-        Read a multiline string literal (\"\"\"...\"\"\") and emit a MULTILINE_STRING token.
-
-        Читает многострочный строковой литерал (\"\"\"...\"\"\") и выдаёт токен MULTILINE_STRING.
-        """
-        start_col = self.col
-        start_pos = self.pos
-        self._advance()  # first quote
-        self._advance()  # second quote
-        self._advance()  # third quote
-
-        chars = []
-        escaped = False
-
-        while self.pos < len(self.source):
-            ch = self.source[self.pos]
-
-            if escaped:
-                if ch == 'n':
-                    chars.append('\n')
-                elif ch == 't':
-                    chars.append('\t')
-                elif ch == 'r':
-                    chars.append('\r')
-                elif ch == '"':
-                    chars.append('"')
-                elif ch == '\\':
-                    chars.append('\\')
-                else:
-                    chars.append('\\' + ch)
-                escaped = False
+                continue
+            elif ch == '}':
+                depth -= 1
                 self._advance()
                 continue
 
-            if ch == '\\':
-                escaped = True
-                self._advance()
-                continue
-
-            if ch == '"' and self.pos + 2 < len(self.source) and self.source[self.pos+1] == '"' and self.source[self.pos+2] == '"':
-                self._advance()
-                self._advance()
+            # Используем переданный quote_char для проверки закрытия строки
+            if ch == quote_char and depth == 0:
+                content_end = self.pos
                 self._advance()
                 break
-
-            chars.append(ch)
+                
             self._advance()
         else:
-            self._error("multiline string")
+            self._error("f-string")
 
+        content = self.source[content_start:content_end]
         raw_lexeme = self.source[start_pos:self.pos]
-        value = ''.join(chars)
-        self._add_token(TokenType.MULTILINE_STRING, raw_lexeme, self.line, start_col, value)
+        self._add_token(TokenType.FSTRING, raw_lexeme, start_line, start_col, value=content)
 
     def _read_multiline_fstring(self):
         """
         Read a multiline f-string literal (f\"\"\"...\"\"\") and emit an FSTRING_MULTILINE token.
-
-        Читает многострочный f-строковый литерал (f\"\"\"...\"\"\") и выдаёт токен FSTRING_MULTILINE.
         """
+        start_line = self.line
         start_col = self.col
         start_pos = self.pos
-        # we already consumed 'f', now consume the three opening quotes
-        self._advance()  # first quote
-        self._advance()  # second quote
-        self._advance()  # third quote
+        
+        self._advance()  # "
+        self._advance()  # "
+        self._advance()  # "
 
-        end_pos = self.pos
+        content_start = self.pos
         depth = 0
-        while end_pos < len(self.source):
-            ch = self.source[end_pos]
+        escaped = False
+        content_end = self.pos
+
+        while self.pos < len(self.source):
+            ch = self.source[self.pos]
+
+            if escaped:
+                escaped = False
+                self._advance()
+                continue
+
+            if ch == '\\':
+                escaped = True
+                self._advance()
+                continue
+
             if ch == '{':
                 depth += 1
+                self._advance()
+                continue
             elif ch == '}':
                 depth -= 1
-            elif ch == '"' and end_pos + 2 < len(self.source) and \
-                 self.source[end_pos+1] == '"' and self.source[end_pos+2] == '"' and depth == 0:
+                self._advance()
+                continue
+
+            if ch == '"' and self.pos + 2 < len(self.source) and \
+               self.source[self.pos+1] == '"' and self.source[self.pos+2] == '"' and depth == 0:
+                content_end = self.pos
+                self._advance()
+                self._advance()
+                self._advance()
                 break
-            end_pos += 1
+            
+            self._advance()
         else:
             self._error("multiline f-string")
 
-        content = self.source[self.pos:end_pos]
-        self.pos = end_pos
+        content = self.source[content_start:content_end]
+        raw_lexeme = self.source[start_pos:self.pos]
+        
+        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, start_line, start_col, value=content)
+
+    def _read_multiline_fstring(self):
+        """
+        Read a multiline f-string literal (f\"\"\"...\"\"\") and emit an FSTRING_MULTILINE token.
+        """
+        start_line = self.line
+        start_col = self.col
+        start_pos = self.pos
+        
         self._advance()  # first quote
         self._advance()  # second quote
         self._advance()  # third quote
 
+        content_start = self.pos
+        depth = 0
+        escaped = False
+        content_end = self.pos
+
+        while self.pos < len(self.source):
+            ch = self.source[self.pos]
+
+            if escaped:
+                escaped = False
+                self._advance()
+                continue
+
+            if ch == '\\':
+                escaped = True
+                self._advance()
+                continue
+
+            if ch == '{':
+                depth += 1
+                self._advance()
+                continue
+            elif ch == '}':
+                depth -= 1
+                self._advance()
+                continue
+
+            if ch == '"' and self.pos + 2 < len(self.source) and \
+               self.source[self.pos+1] == '"' and self.source[self.pos+2] == '"' and depth == 0:
+                content_end = self.pos
+                self._advance()  # first quote
+                self._advance()  # second quote
+                self._advance()  # third quote
+                break
+            
+            self._advance()
+        else:
+            self._error("multiline f-string")
+
+        content = self.source[content_start:content_end]
         raw_lexeme = self.source[start_pos:self.pos]
-        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, self.line, start_col, value=content)
+        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, start_line, start_col, value=content)
 
     def _read_c_code(self):
         """
         Read a cCode { ... } block and emit a CCODE token with the raw code as value.
-
-        Читает блок cCode { ... } и выдаёт токен CCODE, сохраняя сырой код как значение.
         """
         self._skip_whitespace()
         self.pos += 5  # skip 'cCode'
@@ -501,8 +576,28 @@ class Lexer:
         self._advance()  # consume '{'
         brace_depth = 1
         content_start = self.pos
+        
         while self.pos < len(self.source) and brace_depth > 0:
             ch = self.source[self.pos]
+            
+            if ch == '/' and self._peek(1) == '/':
+                self._advance()
+                self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != '\n':
+                    self._advance()
+                continue
+                
+            if ch == '/' and self._peek(1) == '*':
+                self._advance()
+                self._advance()
+                while self.pos < len(self.source):
+                    if self.source[self.pos] == '*' and self._peek(1) == '/':
+                        self._advance()
+                        self._advance()
+                        break
+                    self._advance()
+                continue
+
             if ch == '"':
                 self._advance()
                 while self.pos < len(self.source) and self.source[self.pos] != '"':
@@ -527,6 +622,7 @@ class Lexer:
                     break
             else:
                 self._advance()
+                
         if brace_depth != 0:
             self._add_unknown_token()
             return
