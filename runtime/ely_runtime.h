@@ -65,8 +65,8 @@ typedef struct {
 typedef enum {
     GC_OBJ_STRING,
     GC_OBJ_VALUE,
-    GC_OBJ_ARRAY,
-    GC_OBJ_OBJECT,
+    GC_OBJ_ARR,
+    GC_OBJ_DICT,
     GC_OBJ_DOUBLE
 } gc_obj_type;
 

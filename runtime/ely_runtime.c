@@ -110,8 +110,8 @@ inline int ely_get_type(ely_value v) {
     if (tag == ELY_TAG_PTR) {
         void* ptr = ELY_UNBOX_PTR(v);
         int gc_type = get_heap_obj_type(ptr);
-        if (gc_type == GC_OBJ_ARRAY) return ely_VALUE_ARRAY;
-        if (gc_type == GC_OBJ_OBJECT) return ely_VALUE_OBJECT;
+        if (gc_type == GC_OBJ_ARR) return ely_VALUE_ARRAY;
+        if (gc_type == GC_OBJ_DICT) return ely_VALUE_OBJECT;
     }
     return ely_VALUE_DOUBLE; // Float Self-Tagging: всё остальное — валидный double
 }
@@ -1044,10 +1044,10 @@ char* ely_value_to_string(ely_value v) {
         if (type == GC_OBJ_STRING) {
             free(buf);
             return strdup((const char*)ptr);
-        } else if (type == GC_OBJ_ARRAY) {
+        } else if (type == GC_OBJ_ARR) {
             free(buf);
             return array_to_json((arr*)ptr);
-        } else if (type == GC_OBJ_OBJECT) {
+        } else if (type == GC_OBJ_DICT) {
             free(buf);
             return dict_to_json((dict*)ptr);
         } else {
@@ -1084,9 +1084,9 @@ char* ely_value_to_json(ely_value v) {
         uint8_t type = get_heap_obj_type(ptr);
         if (type == GC_OBJ_STRING) {
             return _jsonify_string((const char*)ptr);
-        } else if (type == GC_OBJ_ARRAY) {
+        } else if (type == GC_OBJ_ARR) {
             return array_to_json((arr*)ptr);
-        } else if (type == GC_OBJ_OBJECT) {
+        } else if (type == GC_OBJ_DICT) {
             return dict_to_json((dict*)ptr);
         }
     }

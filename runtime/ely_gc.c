@@ -564,30 +564,56 @@ static void* copy_object(void* obj_ptr) {
     return header_to_ptr(new_hdr);
 }
 
+#define ELY_REPACK_PTR(target_slot, raw_ptr, type_tag) \
+    (target_slot) = (((uint64_t)(type_tag) << 56) | ((uint64_t)(raw_ptr) & ELY_PAYLOAD_MASK))
+
 static void scan_object_fields(void* obj_ptr) {
     gc_header_t* hdr = ptr_to_header(obj_ptr);
     switch (hdr->obj_type) {
         case GC_OBJ_VALUE: {
             ely_value* v = (ely_value*)obj_ptr;
-            if (v->type == ely_VALUE_ARRAY) v->u.array_val = copy_object(v->u.array_val);
-            else if (v->type == ely_VALUE_OBJECT) v->u.object_val = copy_object(v->u.object_val);
+            int t = ely_get_type(*v);
+            if (t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) {
+                void* old_ptr = ELY_UNBOX_PTR(*v);
+                void* new_ptr = copy_object(old_ptr);
+                ELY_REPACK_PTR(*v, new_ptr, t);
+            }
             break;
         }
         case GC_OBJ_ARR: {
             arr* a = (arr*)obj_ptr;
-            for (size_t i = 0; i < a->size; i++) a->data[i] = copy_object(a->data[i]);
+            for (size_t i = 0; i < a->size; i++) {
+                ely_value val = a->data[i];
+                int t = ely_get_type(val);
+                if (t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) {
+                    void* old_ptr = ELY_UNBOX_PTR(val);
+                    void* new_ptr = copy_object(old_ptr);
+                    ELY_REPACK_PTR(a->data[i], new_ptr, t);
+                }
+            }
             break;
         }
         case GC_OBJ_DICT: {
             dict* d = (dict*)obj_ptr;
-            /* Копируем buckets-array внутри самого dict (иначе после GC dict потеряет свои корзины) */
-            d->buckets = copy_object(d->buckets);
+            /* Копируем buckets-array внутри самого dict */
+            d->buckets = (dict_entry**)copy_object(d->buckets);
             for (size_t i = 0; i < d->capacity; i++) {
                 dict_entry* e = d->buckets[i];
                 while (e) {
-                    e->key = copy_object(e->key);
-                    e->value = copy_object(e->value);
-                    if (e->next) e->next = copy_object(e->next);
+                    // Ключ и значение теперь тоже упакованные ely_value
+                    int kt = ely_get_type(e->key);
+                    if (kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == ely_VALUE_STRING) {
+                        void* new_key = copy_object(ELY_UNBOX_PTR(e->key));
+                        ELY_REPACK_PTR(e->key, new_key, kt);
+                    }
+
+                    int vt = ely_get_type(e->value);
+                    if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == vt == ely_VALUE_STRING) {
+                        void* new_val = copy_object(ELY_UNBOX_PTR(e->value));
+                        ELY_REPACK_PTR(e->value, new_val, vt);
+                    }
+
+                    if (e->next) e->next = (dict_entry*)copy_object(e->next);
                     e = e->next;
                 }
             }
@@ -645,22 +671,38 @@ static void mark_object(void* obj_ptr) {
         switch (hdr->obj_type) {
             case GC_OBJ_VALUE: {
                 ely_value* v = (ely_value*)obj_ptr;
-                if (v->type == ely_VALUE_ARRAY) mark_object(v->u.array_val);
-                else if (v->type == ely_VALUE_OBJECT) mark_object(v->u.object_val);
+                int t = ely_get_type(*v);
+                if (t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) {
+                    mark_object(ELY_UNBOX_PTR(*v));
+                }
                 break;
             }
             case GC_OBJ_ARR: {
                 arr* a = (arr*)obj_ptr;
-                for (size_t i = 0; i < a->size; i++) mark_object(a->data[i]);
+                for (size_t i = 0; i < a->size; i++) {
+                    ely_value val = a->data[i];
+                    int t = ely_get_type(val);
+                    if (t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) {
+                        mark_object(ELY_UNBOX_PTR(val));
+                    }
+                }
                 break;
             }
             case GC_OBJ_DICT: {
                 dict* d = (dict*)obj_ptr;
+                mark_object(d->buckets);
                 for (size_t i = 0; i < d->capacity; i++) {
                     dict_entry* e = d->buckets[i];
                     while (e) {
-                        mark_object(e->key);
-                        mark_object(e->value);
+                        mark_object(e); // Маркируем саму ноду списка коллизий
+                        int kt = ely_get_type(e->key);
+                        if (kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == kt == ely_VALUE_STRING) {
+                            mark_object(ELY_UNBOX_PTR(e->key));
+                        }
+                        int vt = ely_get_type(e->value);
+                        if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == vt == ely_VALUE_STRING) {
+                            mark_object(ELY_UNBOX_PTR(e->value));
+                        }
                         e = e->next;
                     }
                 }
@@ -782,25 +824,42 @@ static void update_references(void* obj, ptrdiff_t delta) {
     switch (hdr->obj_type) {
         case GC_OBJ_VALUE: {
             ely_value* v = (ely_value*)obj;
-            if (v->type == ely_VALUE_ARRAY && v->u.array_val)
-                v->u.array_val = (arr*)((char*)v->u.array_val + delta);
-            else if (v->type == ely_VALUE_OBJECT && v->u.object_val)
-                v->u.object_val = (dict*)((char*)v->u.object_val + delta);
+            int t = ely_get_type(*v);
+            if ((t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) && ELY_UNBOX_PTR(*v)) {
+                void* new_ptr = (char*)ELY_UNBOX_PTR(*v) + delta;
+                ELY_REPACK_PTR(*v, new_ptr, t);
+            }
             break;
         }
         case GC_OBJ_ARR: {
             arr* a = (arr*)obj;
-            for (size_t i = 0; i < a->size; i++)
-                if (a->data[i]) a->data[i] = (ely_value*)((char*)a->data[i] + delta);
+            for (size_t i = 0; i < a->size; i++) {
+                ely_value val = a->data[i];
+                int t = ely_get_type(val);
+                if ((t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) && ELY_UNBOX_PTR(val)) {
+                    void* new_ptr = (char*)ELY_UNBOX_PTR(val) + delta;
+                    ELY_REPACK_PTR(a->data[i], new_ptr, t);
+                }
+            }
             break;
         }
         case GC_OBJ_DICT: {
             dict* d = (dict*)obj;
+            if (d->buckets) d->buckets = (dict_entry**)((char*)d->buckets + delta);
             for (size_t i = 0; i < d->capacity; i++) {
                 dict_entry* e = d->buckets[i];
                 while (e) {
-                    if (e->key) e->key = (ely_value*)((char*)e->key + delta);
-                    if (e->value) e->value = (ely_value*)((char*)e->value + delta);
+                    int kt = ely_get_type(e->key);
+                    if ((kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == ely_VALUE_STRING) && ELY_UNBOX_PTR(e->key)) {
+                        void* new_ptr = (char*)ELY_UNBOX_PTR(e->key) + delta;
+                        ELY_REPACK_PTR(e->key, new_ptr, kt);
+                    }
+                    int vt = ely_get_type(e->value);
+                    if ((vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == ely_VALUE_STRING) && ELY_UNBOX_PTR(e->value)) {
+                        void* new_ptr = (char*)ELY_UNBOX_PTR(e->value) + delta;
+                        ELY_REPACK_PTR(e->value, new_ptr, vt);
+                    }
+                    if (e->next) e->next = (dict_entry*)((char*)e->next + delta);
                     e = e->next;
                 }
             }
@@ -866,19 +925,29 @@ static void collect_old(void) {
         gc_header_t* hdr = (gc_header_t*)scan;
         void* obj = header_to_ptr(hdr);
         if (hdr->obj_type == GC_OBJ_VALUE) {
-            ely_value* v = obj;
-            if (v->type == ely_VALUE_ARRAY) mark_object(v->u.array_val);
-            else if (v->type == ely_VALUE_OBJECT) mark_object(v->u.object_val);
+            ely_value* v = (ely_value*)obj;
+            int t = ely_get_type(*v);
+            if (t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) {
+                mark_object(ELY_UNBOX_PTR(*v));
+            }
         } else if (hdr->obj_type == GC_OBJ_ARR) {
-            arr* a = obj;
-            for (size_t i = 0; i < a->size; i++) mark_object(a->data[i]);
+            arr* a = (arr*)obj;
+            for (size_t i = 0; i < a->size; i++) {
+                ely_value val = a->data[i];
+                int t = ely_get_type(val);
+                if (t == ely_VALUE_ARRAY || t == ely_VALUE_OBJECT || t == ely_VALUE_STRING) {
+                    mark_object(ELY_UNBOX_PTR(val));
+                }
+            }
         } else if (hdr->obj_type == GC_OBJ_DICT) {
-            dict* d = obj;
+            dict* d = (dict*)obj;
             for (size_t i = 0; i < d->capacity; i++) {
                 dict_entry* e = d->buckets[i];
                 while (e) {
-                    mark_object(e->key);
-                    mark_object(e->value);
+                    int kt = ely_get_type(e->key);
+                    if (kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == ely_VALUE_STRING) mark_object(ELY_UNBOX_PTR(e->key));
+                    int vt = ely_get_type(e->value);
+                    if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == ely_VALUE_STRING) mark_object(ELY_UNBOX_PTR(e->value));
                     e = e->next;
                 }
             }
@@ -886,7 +955,7 @@ static void collect_old(void) {
         scan += ALIGN_UP(hdr->size, GC_ALIGNMENT);
     }
 
-    // Компактизация старого поколения (вместо sweep)
+    // Компактизация старого поколения
     printf("[GC] compacting...\n"); fflush(stdout);
     compact_old();
 
@@ -1183,41 +1252,38 @@ void gc_trace_roots(void) {
     }
 }
 
-/* ely_gc.c */
-
 void gc_scan_object(gc_header_t* hdr) {
-    switch ((gc_obj_type_t)hdr->obj_type) {
+    // Внимание: используем только уникальные имена типов объектов GC из твоего енама!
+    switch (hdr->obj_type) {
         
-        case GC_OBJ_ARRAY: {
-            // Извлекаем указатель на структуру массива из тела объекта
+        case GC_OBJ_ARR: { // Синхронизировано с scan_object_fields
             arr* a = (arr*)header_to_ptr(hdr);
-            
-            // Пробегаемся по всем элементам массива
-            // Каждый элемент a->data[i] — это теперь ely_value
+            // Каждый элемент a->data[i] — это теперь ely_value (uint64_t)
+            // Передаем адрес ячейки (&a->data[i]), чтобы gc_trace_value обновил указатель внутри боксированного числа
             for (size_t i = 0; i < a->size; i++) {
-                gc_trace_value(&a->data[i]); // Передаем адрес слота для обновления!
+                gc_trace_value(&a->data[i]); 
             }
             break;
         }
 
-        case GC_OBJ_OBJECT: {
+        case GC_OBJ_DICT: { // Переписано под структуру buckets с коллизиями
             dict* d = (dict*)header_to_ptr(hdr);
-            // Пробегаемся по хэш-таблице словаря
             for (size_t i = 0; i < d->capacity; i++) {
-                if (d->entries[i].is_active) {
-                    // Ключ-строка (указатель)
-                    gc_trace_value(&d->entries[i].key);
-                    // Значение (любой тип ely_value)
-                    gc_trace_value(&d->entries[i].value);
+                dict_entry* e = d->buckets[i];
+                while (e) {
+                    // Передаем адреса полей упакованных ely_value для трассировки
+                    gc_trace_value(&e->key);
+                    gc_trace_value(&e->value);
+                    e = e->next;
                 }
             }
             break;
         }
 
         case GC_OBJ_STRING:
-        case GC_OBJ_DOUBLE: // Наш новый кучный Double (Slow Path)
-            // У строк и сырых double внутри нет указателей на другие объекты кучи,
-            // их сканировать глубже не нужно.
+        case GC_OBJ_VALUE: 
+            // Примитивные кучные обертки не содержат внутри себя других указателей кучи,
+            // их трассировать вглубь не нужно.
             break;
     }
 }
@@ -1231,7 +1297,7 @@ void gc_scan_value(ely_value v) {
     }
 }
 
-// Сканирование массива (GC_OBJ_ARRAY)
+// Сканирование массива (GC_OBJ_ARR)
 void gc_scan_array(arr* a) {
     for (size_t i = 0; i < arr_len(a); i++) {
         // Массив теперь хранит сырые 64-битные ely_value
