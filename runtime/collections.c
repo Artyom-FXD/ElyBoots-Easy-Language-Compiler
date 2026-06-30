@@ -277,28 +277,63 @@ size_t dict_size(dict* d) {
 // -------------------------------------------------------------------
 
 unsigned int dict_hash_str(ely_value key) {
-    // Проверяем тип тега из верхних байт (сдвиг на 56 бит)
-    if ((key >> 56) != ely_VALUE_STRING) return 0;
-    
-    // Распаковываем указатель на сырую C-строку
-    char* str = (char*)(uintptr_t)(key & ELY_PAYLOAD_MASK);
-    if (!str) return 0;
-    
-    unsigned int hash = 5381;
-    int c;
-    while ((c = (unsigned char)*str++)) {
-        hash = ((hash << 5) + hash) + c;
+    // 1: immediate str
+    if (ely_is_immediate_str(key)) {
+        size_t len = ely_immediate_str_len(key);
+        unsigned int hash = 5381;
+        
+        for (size_t i = 0; i < len; i++) {
+            int c = (char)((key >> (ELY_STR_DATA_SHIFT + (i * 8))) & 0xFF);
+            hash = ((hash << 5) + hash) + c;
+        }
+        return hash;
     }
-    return hash;
+
+    // 2: str in heap
+    if ((key >> 56) == ely_VALUE_STRING) {
+        char* str = (char*)(uintptr_t)(key & ELY_PAYLOAD_MASK);
+        if (!str) return 0;
+        
+        unsigned int hash = 5381;
+        int c;
+        while ((c = (unsigned char)*str++)) {
+            hash = ((hash << 5) + hash) + c;
+        }
+        return hash;
+    }
+
+    return 0; // Не строка
 }
 
 int dict_cmp_str(ely_value a, ely_value b) {
     if (a == b) return 0;
-    if ((a >> 56) != ely_VALUE_STRING || (b >> 56) != ely_VALUE_STRING) return 1;
-    
-    char* str_a = (char*)(uintptr_t)(a & ELY_PAYLOAD_MASK);
-    char* str_b = (char*)(uintptr_t)(b & ELY_PAYLOAD_MASK);
+
+    bool a_imm = ely_is_immediate_str(a);
+    bool b_imm = ely_is_immediate_str(b);
+
+    char buf_a[8];
+    char buf_b[8];
+    char* str_a;
+    char* str_b;
+
+    if (a_imm) {
+        ely_immediate_str_get_chars(a, buf_a);
+        str_a = buf_a;
+    } else if ((a >> 56) == ely_VALUE_STRING) {
+        str_a = (char*)(uintptr_t)(a & ELY_PAYLOAD_MASK);
+    } else {
+        return 1;
+    }
+
+    if (b_imm) {
+        ely_immediate_str_get_chars(b, buf_b);
+        str_b = buf_b;
+    } else if ((b >> 56) == ely_VALUE_STRING) {
+        str_b = (char*)(uintptr_t)(b & ELY_PAYLOAD_MASK);
+    } else {
+        return 1;
+    }
+
     if (!str_a || !str_b) return 1;
-    
     return strcmp(str_a, str_b);
 }

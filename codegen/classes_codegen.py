@@ -31,7 +31,7 @@ class ClassCodeGen(FuncCodeGen):
                 self.emit(f"{ctype} {f.name};")
 
         for sf in cls.static_fields:
-            self.emit(f"static ely_value* {sf.name};")
+            self.emit(f"static ely_value {sf.name};")
 
         old_emit = self.emit_to_method
         self.emit_to_method = self.emit
@@ -123,7 +123,7 @@ class ClassCodeGen(FuncCodeGen):
             if f.initializer:
                 init_val = self.gen_expression(f.initializer)
                 ctype = self.type_to_cpp(f.type, is_field=True)
-                if ctype != 'ely_value*':
+                if ctype != 'ely_value':
                     init_val = self.ensure_type(init_val, ctype)
                     if f.type == 'str':
                         init_val = ExprCode(f"ely_str_dup({init_val.code})", 'char*', f.type)
@@ -134,7 +134,7 @@ class ClassCodeGen(FuncCodeGen):
             if f.is_unwait and f.unwait_default:
                 val_code = self.gen_expression(f.unwait_default)
                 ctype = self.type_to_cpp(f.type, is_field=True)
-                if ctype != 'ely_value*':
+                if ctype != 'ely_value':
                     val_code = self.ensure_type(val_code, ctype)
                     if f.type == 'str':
                         val_code = ExprCode(f"ely_str_dup({val_code.code})", 'char*', f.type)
@@ -193,7 +193,7 @@ class ClassCodeGen(FuncCodeGen):
         for p in method.parameters:
             self.var_types[p.name] = p.type
             ctype = self.type_to_cpp(p.type, is_param=True)
-            if ctype == 'ely_value*':
+            if ctype == 'ely_value':
                 self.emit(f"gc_add_root((void**)&{p.name});")
                 if self.scope_roots:
                     self.scope_roots[-1].append(p.name)
@@ -220,7 +220,7 @@ class ClassCodeGen(FuncCodeGen):
     def gen_static_field_definitions(self):
         for cls in self.classes_ast.values():
             for sf in cls.static_fields:
-                self.emit(f"ely_value* {cls.name}::{sf.name} = ely_value_new_int(0);")
+                self.emit(f"ely_value {cls.name}::{sf.name} = ely_value_new_int(0);")
 
     def gen_static_method_out_of_class(self, cls: ClassDeclaration, method: MethodDeclaration):
         """Статический метод, определённый вне класса."""
@@ -235,7 +235,7 @@ class ClassCodeGen(FuncCodeGen):
         self.push_scope()
         for p in method.parameters:
             self.var_types[p.name] = p.type
-            if self.type_to_cpp(p.type, is_param=True) == 'ely_value*':
+            if self.type_to_cpp(p.type, is_param=True) == 'ely_value':
                 self.emit_to_method(f"gc_add_root((void**)&{p.name});")
         for stmt in method.body:
             self.gen_statement(stmt)

@@ -25,8 +25,8 @@ class CppCodeGen(ClassCodeGen):
             'timeNow':     ('ely_time_now',      'more', []),
             'timeNowMs':   ('ely_time_now_ms',   'more', []),
             'timeDiff':    ('ely_time_diff',     'double', ['more', 'more']),
-            'formatTime':  ('ely_format_time',   'ely_value*',   ['ely_value*', 'ely_value*']),
-            'parseTime':   ('ely_parse_time',    'more',  ['ely_value*', 'ely_value*']),
+            'formatTime':  ('ely_format_time',   'ely_value',   ['ely_value', 'ely_value']),
+            'parseTime':   ('ely_parse_time',    'more',  ['ely_value', 'ely_value']),
             'sleep':       ('ely_sleep',         'void',  ['unsigned int']),
             'randInt':       ('ely_rand_int',        'int',  []),
             'randIntRange':  ('ely_rand_int_range',  'int',  ['int', 'int']),
@@ -50,11 +50,11 @@ class CppCodeGen(ClassCodeGen):
             'callDoubleDoubleDouble': ('ely_call_double_double_double', 'double', ['void*', 'double', 'double']),
             'callStrVoid':      ('ely_call_str_void',     'char*',  ['void*']),
             'closeLibrary':     ('ely_close_library',     'void', ['void*']),
-            'jsonify':  ('ely_dict_to_json', 'char*', ['ely_value*']),
+            'jsonify':  ('ely_dict_to_json', 'char*', ['ely_value']),
             'dictify':  ('ely_dictify',      'void*', ['char*']),
-            'keys': ('ely_dict_keys', 'ely_value*', ['ely_value*']),
-            'has':  ('ely_dict_has',  'int',     ['ely_value*', 'ely_value*']),
-            'del':  ('ely_dict_del',  'void',     ['ely_value*', 'ely_value*']),
+            'keys': ('ely_dict_keys', 'ely_value', ['ely_value']),
+            'has':  ('ely_dict_has',  'int',     ['ely_value', 'ely_value']),
+            'del':  ('ely_dict_del',  'void',     ['ely_value', 'ely_value']),
             'len':      ('ely_str_len',       'size_t',   ['char*']),
             'concat':   ('ely_str_concat',    'char*',   ['char*', 'char*']),
             'dup':      ('ely_str_dup',       'char*',   ['char*']),
@@ -75,11 +75,11 @@ class CppCodeGen(ClassCodeGen):
             'strToUm':  ('ely_str_to_umore',  'unsigned long long', ['char*']),
             'strToFlt': ('ely_str_to_flt',    'float', ['char*']),
             'strToDouble':('ely_str_to_double','double', ['char*']),
-            'toInt':    ('ely_to_int',    'ely_value*', ['ely_value*']),
-            'toFlt':    ('ely_to_double', 'ely_value*', ['ely_value*']),
-            'toStr':    ('ely_to_string', 'ely_value*', ['ely_value*']),
-            'makeArr':  ('ely_make_arr',  'ely_value*', ['ely_value*']),
-            'dynArr':   ('ely_dyn_arr',   'ely_value*', ['ely_value*']),
+            'toInt':    ('ely_to_int',    'ely_value', ['ely_value']),
+            'toFlt':    ('ely_to_double', 'ely_value', ['ely_value']),
+            'toStr':    ('ely_to_string', 'ely_value', ['ely_value']),
+            'makeArr':  ('ely_make_arr',  'ely_value', ['ely_value']),
+            'dynArr':   ('ely_dyn_arr',   'ely_value', ['ely_value']),
             'abs':      ('ely_abs_int',       'int',   ['int']),
             'absMore':  ('ely_abs_more',      'long long',  ['long long']),
             'fabs':     ('ely_fabs',          'double',['double']),
@@ -90,10 +90,10 @@ class CppCodeGen(ClassCodeGen):
             'sin':      ('ely_sin',           'double',['double']),
             'cos':      ('ely_cos',           'double',['double']),
             'tan':      ('ely_tan',           'double',['double']),
-            'typeof':  ('ely_typeof',         'char*',   ['ely_value*']),
-            'fields':  ('ely_value_get_fields', 'ely_value*', ['ely_value*']),
-            'methods': ('ely_value_get_methods','ely_value*', ['ely_value*']),
-            'isType': ('isType', 'int', ['ely_value*', 'char*']),
+            'typeof':  ('ely_typeof',         'char*',   ['ely_value']),
+            'fields':  ('ely_value_get_fields', 'ely_value', ['ely_value']),
+            'methods': ('ely_value_get_methods','ely_value', ['ely_value']),
+            'isType': ('isType', 'int', ['ely_value', 'char*']),
             'classInfoName': ('ely_get_class_info_name', 'char*', ['char*']),
         }
         self.set_builtins(builtins)
@@ -118,7 +118,7 @@ class CppCodeGen(ClassCodeGen):
             '#endif',
             '',
             'static jmp_buf __ex_buf;',
-            'static ely_value* volatile __ex_value = nullptr;',
+            'static ely_value volatile __ex_value = nullptr;',
             ''
         ]
         self.global_code = []
@@ -338,7 +338,7 @@ class CppCodeGen(ClassCodeGen):
             for ext in self.extern_functions.values():
                 ret = ext.return_type or 'void'
                 if ret == 'any' or ret == 'object':
-                    ret_cpp = 'ely_value*'
+                    ret_cpp = 'ely_value'
                 elif ret == 'str':
                     ret_cpp = 'char*'
                 elif ret in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
@@ -352,7 +352,7 @@ class CppCodeGen(ClassCodeGen):
                     if p.type == 'str':
                         c_type = 'char*'
                     elif p.type == 'any' or p.type == 'object':
-                        c_type = 'ely_value*'
+                        c_type = 'ely_value'
                     elif p.type in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
                         c_type = self.type_to_cpp(p.type, is_param=True)
                     elif p.type in self.classes_ast:
@@ -382,7 +382,7 @@ class CppCodeGen(ClassCodeGen):
                 elif ret == 'str':
                     ret_cpp = 'char*'
                 elif ret == 'any' or ret == 'object':
-                    ret_cpp = 'ely_value*'
+                    ret_cpp = 'ely_value'
                 elif ret in self.classes_ast:
                     ret_cpp = f'{ret}*'
                 elif ret in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
@@ -395,7 +395,7 @@ class CppCodeGen(ClassCodeGen):
                     if p.type == 'str':
                         c_type = 'char*'
                     elif p.type == 'any' or p.type == 'object':
-                        c_type = 'ely_value*'
+                        c_type = 'ely_value'
                     elif p.type in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
                         c_type = self.type_to_cpp(p.type, is_param=True)
                     elif p.type in self.classes_ast:
@@ -467,7 +467,7 @@ class CppCodeGen(ClassCodeGen):
             self.main_code.append("    gc_set_enabled(1);")
             self.main_code.append("    try {")
             self.main_code.append("        // пользовательский main будет вставлен сюда")
-            self.main_code.append("    } catch (ely_value* e) {")
+            self.main_code.append("    } catch (ely_value e) {")
             self.main_code.append("        ely_println_str(ely_value_to_cstr(e));")
             self.main_code.append("        return 1;")
             self.main_code.append("    }")

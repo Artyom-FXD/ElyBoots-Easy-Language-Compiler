@@ -22,6 +22,10 @@ typedef uint64_t ely_value;
 #define ELY_TAG_SPECIAL       0x3ULL  // 011 - Константы и мелкие типы (Bool, Null, Char, Byte)
 // Теги 100, 101, 110, 111 (Бит 2 выставлен в 1) заняты под нативные Float
 
+#define ELY_STR_LEN_SHIFT   3
+#define ELY_STR_LEN_MASK    0x7ULL
+#define ELY_STR_DATA_SHIFT  6
+
 // Подтеги для ELY_TAG_SPECIAL (Биты 3-7)
 #define ELY_SUBTAG_MASK       (0x1FULL << 3)
 #define ELY_SUBTAG_BOOL       (0x00ULL << 3)
@@ -239,6 +243,25 @@ static inline void ely_unbox_inline_str(ely_value v, char* buf) {
     }
     buf[len] = '\0'; // Гарантируем null-терминатор для Си-функций
 }
+
+/* ============================================================================
+ * SSO
+ * ============================================================================ */
+inline bool ely_is_immediate_str(ely_value val) {
+    return (val & ELY_TAG_MASK) == ELY_TAG_STR0;
+}
+
+// Упаковка сырой C-строки в immediate ely_value
+ely_value ely_immediate_str_encode(const char* str, size_t len);
+
+// Извлечение длины
+inline size_t ely_immediate_str_len(ely_value val) {
+    return (val >> ELY_STR_LEN_SHIFT) & ELY_STR_LEN_MASK;
+}
+
+// Извлечение символов во временный буфер
+void ely_immediate_str_get_chars(ely_value val, char* out_buf);
+
 
 /* ============================================================================
  * Сигнатуры стандартных функций рантайма (Передача по значению)

@@ -1732,3 +1732,24 @@ void ely_chdir_to_exe_dir(void) {
     }
 #endif
 }
+
+// SS0 =============================================================================
+ely_value ely_immediate_str_encode(const char* str, size_t len) {
+    if (len > 7) return 0; // Не влезает, нужно слать в кучу
+
+    ely_value val = ELY_TAG_STR0;
+    val |= ((ely_value)len << ELY_STR_LEN_SHIFT);
+
+    for (size_t i = 0; i < len; i++) {
+        val |= ((ely_value)(unsigned char)str[i] << (ELY_STR_DATA_SHIFT + (i * 8)));
+    }
+    return val;
+}
+
+void ely_immediate_str_get_chars(ely_value val, char* out_buf) {
+    size_t len = ely_immediate_str_len(val);
+    for (size_t i = 0; i < len; i++) {
+        out_buf[i] = (char)((val >> (ELY_STR_DATA_SHIFT + (i * 8))) & 0xFF);
+    }
+    out_buf[len] = '\0';
+}
