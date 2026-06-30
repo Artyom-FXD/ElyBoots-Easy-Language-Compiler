@@ -6,7 +6,6 @@
 #include <stdint.h>
 #include "ely_gc.h"
 
-// БОЛЬШЕ НЕ ТРЕБУЕТСЯ: forward declaration для ely_value в виде структуры.
 // Тип ely_value (uint64_t) должен приходить из базового рантайма до инклюда коллекции.
 typedef uint64_t ely_value; 
 
@@ -18,17 +17,16 @@ typedef struct arr {
 } arr;
 
 arr* arr_new(void);
-void arr_free(arr* a);
-void arr_push(arr* a, ely_value elem);          // БЫЛО: ely_value* elem
-ely_value arr_pop_value(arr* a);                // БЫЛО: ely_value*
+void arr_push(arr* a, ely_value elem);
+ely_value arr_pop_value(arr* a);
 void arr_pop(arr* a);
-ely_value arr_get(arr* a, size_t index);        // БЫЛО: ely_value*
-void arr_set(arr* a, size_t index, ely_value elem); // БЫЛО: ely_value* elem
+ely_value arr_get(arr* a, size_t index);
+void arr_set(arr* a, size_t index, ely_value elem); 
 size_t arr_len(arr* a);
-int arr_remove_value(arr* a, ely_value value);   // БЫЛО: ely_value* value
+int arr_remove_value(arr* a, ely_value value);
 int arr_remove_index(arr* a, size_t index);
-int arr_insert(arr* a, size_t index, ely_value elem); // БЫЛО: ely_value* elem
-int arr_index(arr* a, ely_value value);          // БЫЛО: ely_value* value
+int arr_insert(arr* a, size_t index, ely_value elem);
+int arr_index(arr* a, ely_value value);
 arr* arr_copy(arr* a);
 arr* arr_make(size_t count, ...);
 
@@ -48,7 +46,6 @@ typedef struct dict {
 } dict;
 
 dict* dict_new(unsigned int (*hash)(ely_value), int (*key_cmp)(ely_value, ely_value));
-void dict_free(dict* d);
 void dict_set(dict* d, ely_value key, ely_value value); // БЫЛО: указатели
 ely_value dict_get(dict* d, ely_value key);             // БЫЛО: указатели
 int dict_has(dict* d, ely_value key);
