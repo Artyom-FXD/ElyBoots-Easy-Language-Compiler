@@ -258,191 +258,118 @@ class ProjectBuilder:
         if process_type == 'module':
             return self._build_module()
 
-        if not self._prepare_runtime():
-            return False
-
         sources = self._collect_sources()
         if not sources:
             return False
 
         self._print_project_info(sources)
 
-        cache = self._load_cache()
-        need_generate = self.force_rebuild or self._sources_changed(sources, cache)
-        cpp_file = self.build_dir / 'output.cpp'
-        cpp_file.parent.mkdir(parents=True, exist_ok=True)
+        # Гарантируем наличие папки build внутри корня проекта
+        self.build_dir.mkdir(parents=True, exist_ok=True)
 
-        output_exe_name = self.config.get('output', {}).get('enter', {}).get('name', 'a.out')
-        output_exe = self.output_dir / output_exe_name
-        output_exe.parent.mkdir(parents=True, exist_ok=True)
-
-        main_obj = self.build_dir / 'output.o'
-
-        need_recompile = need_generate
-        need_relink = True
-
-        if not need_generate:
-            if main_obj.exists() and main_obj.stat().st_mtime >= cpp_file.stat().st_mtime if cpp_file.exists() else False:
-                need_recompile = False
-            rt_obj = self.build_dir / 'runtime.o'
-            gc_obj = self.build_dir / 'gc.o'
-            coll_obj = self.build_dir / 'collections.o'
-            all_objs_exist = all(o.exists() for o in [main_obj, rt_obj, gc_obj, coll_obj])
-            if all_objs_exist and output_exe.exists():
-                exe_mtime = output_exe.stat().st_mtime
-                if all(exe_mtime >= o.stat().st_mtime for o in [main_obj, rt_obj, gc_obj, coll_obj]):
-                    need_relink = False
-
-        if need_generate:
-            print(f"\n{TC.tag('BUILD')} Changes detected, recompiling Ely sources...")
-            all_statements = []
-            parser_errors_occurred = False
-            for src in sources:
-                with open(src, 'r', encoding='utf-8') as f:
-                    source_text = f.read()
-                lexer = Lexer(source_text)
-                parser = Parser(lexer)
-                prog = parser.parse()
-                if parser.errors:
-                    parser_errors_occurred = True
-                    self._show_parser_errors(src, source_text, parser.errors)
-                if prog:
-                    all_statements.extend(prog.statements)
-            if parser_errors_occurred:
-                return False
-
-            decls = []
-            bodies = []
-            for stmt in all_statements:
-                if isinstance(stmt, (ClassDeclaration, InterfaceDeclaration, MethodDeclaration, NamespaceDeclaration)):
-                    decls.append(stmt)
-                else:
-                    bodies.append(stmt)
-            all_statements = decls + bodies
-
-            sem = SemanticAnalyzer()
-            errors = sem.analyze(Program(all_statements))
-            if errors:
-                self._show_semantic_errors(errors)
-                return False
-            print(f"  {TC.tag('OK')} Semantic analysis passed")
-
-            codegen = CppCodeGen(debug=self.debug)
-            cpp_code = codegen.generate(Program(all_statements))
-            cpp_file.write_text(cpp_code, encoding='utf-8')
-            print(f"  {TC.tag('OK')} C++ code generated -> {cpp_file.name}")
-            need_recompile = True
-            need_relink = True
-        else:
-            print(f"\n{TC.tag('SKIP')} No source changes detected, skipping Ely compilation.")
-
-        print(f"\n{TC.tag('INFO')} Searching for C++ compiler...")
-        compiler, comp_path, extra_flags = self._find_compiler()
-        if not compiler:
-            print(f"\n{TC.tag('ERROR')} No C++ compiler found.")
-            print(f"  {TC.DIM}Please install MinGW (gcc/g++) or run 'ebt install-compiler'.{TC.RESET}")
+        # --------------------------------------------------------------------
+        # ЭТАП 1. ФРОНТЕНД И ГЕНЕРАЦИЯ C++ КОДА (Оригинальная логика сохранена)
+        # --------------------------------------------------------------------
+        print(f"\n{TC.tag('BUILD')} Parsing and analyzing Ely sources...")
+        all_statements = []
+        parser_errors_occurred = False
+        for src in sources:
+            with open(src, 'r', encoding='utf-8') as f:
+                source_text = f.read()
+            lexer = Lexer(source_text)
+            parser = Parser(lexer)
+            prog = parser.parse()
+            if parser.errors:
+                parser_errors_occurred = True
+                self._show_parser_errors(src, source_text, parser.errors)
+            if prog:
+                all_statements.extend(prog.statements)
+        if parser_errors_occurred:
             return False
-        print(f"  {TC.tag('OK')} Using {compiler} -> {comp_path}")
 
-        if need_recompile:
-            print(f"  {TC.tag('BUILD')} Compiling {cpp_file.name} -> {main_obj.name}...")
-            cmd = [comp_path, '-c', str(cpp_file), '-o', str(main_obj)]
-            if compiler == 'gcc':
-                cmd += ['-x', 'c++']
-            if self.optimization == 'hard':
-                cmd.append('-O2')
-            elif self.optimization == 'soft':
-                cmd.append('-O1')
-            if self.debug:
-                cmd.append('-g')
-            cmd.append(f'-I{self.build_dir}/runtime')
-            cmd.append('-fexceptions')
-            cmd.append('-std=c++20')
-            if compiler in ('gcc', 'clang'):
-                cmd.extend(['-x', 'c++'])
-            try:
-                subprocess.run(cmd, check=True, capture_output=True, text=True)
-                print(f"    {TC.tag('OK')} Compilation succeeded")
-            except subprocess.CalledProcessError as e:
-                print(f"\n{TC.tag('ERROR')} C++ compilation failed")
-                self._show_compiler_error(e.stderr, str(cpp_file))
-                return False
-        else:
-            print(f"  {TC.tag('SKIP')} output.o is up to date, skipping compilation.")
-
-        print(f"\n{TC.tag('INFO')} Compiling runtime...")
-        rt_obj = self.build_dir / 'runtime.o'
-        if self.force_rebuild or not rt_obj.exists():
-            if not self._compile_runtime(compiler, comp_path,
-                                         self.build_dir / 'runtime' / 'ely_runtime.c', rt_obj):
-                return False
-        else:
-            print(f"  {TC.tag('SKIP')} ely_runtime.o up to date")
-        gc_obj = self.build_dir / 'gc.o'
-        if self.force_rebuild or not gc_obj.exists():
-            if not self._compile_runtime(compiler, comp_path,
-                                         self.build_dir / 'runtime' / 'ely_gc.c', gc_obj,
-                                         [f'GC_YOUNG_SIZE_MB={self.gc_young_mb}',
-                                          f'GC_OLD_INITIAL_SIZE_MB={self.gc_old_mb}']):
-                return False
-        else:
-            print(f"  {TC.tag('SKIP')} ely_gc.o up to date")
-        coll_obj = self.build_dir / 'collections.o'
-        if self.force_rebuild or not coll_obj.exists():
-            if not self._compile_runtime(compiler, comp_path,
-                                         self.build_dir / 'runtime' / 'collections.c', coll_obj):
-                return False
-        else:
-            print(f"  {TC.tag('SKIP')} collections.o up to date")
-
-        native_libs = []
-        modules_config = self.config.get('modules', {})
-        for module_name, module_ely_rel in modules_config.items():
-            ely_path = (self.project_root / module_ely_rel).resolve()
-            if ely_path.name == 'elymodule.json':
-                elymodule_json = ely_path
+        decls = []
+        bodies = []
+        for stmt in all_statements:
+            if isinstance(stmt, (ClassDeclaration, InterfaceDeclaration, MethodDeclaration, NamespaceDeclaration)):
+                decls.append(stmt)
             else:
-                elymodule_json = ely_path.parent / 'elymodule.json'
-            if not elymodule_json.exists():
-                continue
+                bodies.append(stmt)
+        all_statements = decls + bodies
 
-            lib_dir = elymodule_json.parent / 'lib'
-            if lib_dir.is_dir():
-                for lib_file in lib_dir.glob('*.lib'):
-                    native_libs.append(lib_file)
-                    print(f"  {TC.tag('OK')} Found native library: {lib_file.relative_to(self.project_root)}")
+        sem = SemanticAnalyzer()
+        errors = sem.analyze(Program(all_statements))
+        if errors:
+            self._show_semantic_errors(errors)
+            return False
+        print(f"  {TC.tag('OK')} Semantic analysis passed")
 
-            inc_dir = elymodule_json.parent / 'include'
-            if inc_dir.is_dir():
-                extra_flags.append(f'-I{inc_dir}')
+        # Генерация C++ трансляции
+        codegen = CppCodeGen()
+        cpp_code = codegen.generate(Program(all_statements))
 
-        if need_relink:
-            print(f"\n{TC.tag('BUILD')} Linking...")
-            link_cmd = [comp_path, '-static', '-mconsole', '-o', str(output_exe),
-                        str(main_obj), str(rt_obj), str(coll_obj), str(gc_obj)]
-            for nlib in native_libs:
-                link_cmd.append(str(nlib))
-            for flag in extra_flags:
-                if flag.startswith('-I'):
-                    link_cmd.append(flag)
-            if compiler in ('gcc', 'g++', 'c++'):
-                link_cmd.append('-lstdc++')
-            if self.optimization == 'hard':
-                link_cmd.append('-O2')
-            try:
-                subprocess.run(link_cmd, check=True, capture_output=True, text=True)
-                print(f"\n  {TC.GREEN}{TC.BOLD}BUILD SUCCESS{TC.RESET}")
-                print(f"  {TC.BOLD}{TC.WHITE}Executable:{TC.RESET} {output_exe}")
-            except subprocess.CalledProcessError as e:
-                print(f"\n{TC.tag('ERROR')} Linking failed")
-                self._show_compiler_error(e.stderr, str(output_exe))
-                return False
-        else:
-            print(f"\n  {TC.tag('SKIP')} {output_exe.name} is up to date, skipping link.")
+        out_cpp_path = self.build_dir / 'output.cpp'
+        with open(out_cpp_path, 'w', encoding='utf-8') as f:
+            f.write(cpp_code)
+        print(f"  {TC.tag('OK')} Generated C++ bridge -> {out_cpp_path}")
 
-        self._save_cache(cache)
+        # --------------------------------------------------------------------
+        # ЭТАП 2. СОЗДАНИЕ КАТАЛОГА BUILD И ФАЙЛА ELYSOURCES.TXT ДЛЯ SVLM
+        # --------------------------------------------------------------------
+        elysources_path = self.build_dir / 'elysources.txt'
+        try:
+            with open(elysources_path, 'w', encoding='utf-8') as f:
+                for src in sources:
+                    f.write(f"{src.resolve()}\n")
+            print(f"  {TC.tag('OK')} Created list for SVLM -> {elysources_path}")
+        except OSError as e:
+            print(f"\n{TC.tag('ERROR')} Failed to write elysources.txt: {e}")
+            return False
 
-        self.output_name = str(output_exe)
+        # --------------------------------------------------------------------
+        # ЭТАП 3. ЗАКОММЕНТИРОВАННЫЙ ВЫЗОВ СТОРОННЕГО КОМПИЛЯТОРА
+        # --------------------------------------------------------------------
+        print(f"\n{TC.tag('SVLM')} External C++ compiler call bypassed. Ready for SVLM.exe orchestration.")
+        
+        # compiler_path, is_gxx = self._find_compiler()
+        # if not compiler_path:
+        #     return False
+        #
+        # runtime_dir = _BASE_DIR / 'runtime'
+        # rt_c = runtime_dir / 'ely_runtime.c'
+        # gc_c = runtime_dir / 'ely_gc.c'
+        #
+        # if not rt_c.exists() or not gc_c.exists():
+        #     print(f"{TC.tag('ERROR')} Runtime files not found in {runtime_dir}")
+        #     return False
+        #
+        # out_exe = self.project_root / ('app.exe' if os.name == 'nt' else 'app.out')
+        # cmd = [
+        #     compiler_path,
+        #     '-O3',
+        #     str(out_cpp_path),
+        #     str(rt_c),
+        #     str(gc_c),
+        #     '-I', str(runtime_dir),
+        #     '-o', str(out_exe)
+        # ]
+        # if is_gxx:
+        #     cmd.append('-std=c++17')
+        # if process_type == 'windows':
+        #     cmd.append('-mwindows')
+        #
+        # print(f"\n{TC.tag('COMPILER')} Compiling final binary...")
+        # print(f"  {TC.DIM}{' '.join(cmd)}{TC.RESET}")
+        #
+        # res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # if res.returncode != 0:
+        #     print(f"\n{TC.tag('ERROR')} Compilation failed (exit code {res.returncode})")
+        #     self._show_compiler_error(res.stderr)
+        #     return False
+
+        print(f"\n  {TC.GREEN}{TC.BOLD}SUCCESS: FRONTEND ARTIFACTS GENERATED{TC.RESET}")
+        print(f"  {TC.BOLD}{TC.WHITE}Project Build Dir:{TC.RESET} {self.build_dir}")
+        print(f"  {TC.DIM}Run SVLM driver with args: build \"{self.project_root}\" elysources.txt{TC.RESET}\n")
+
         return True
 
     def _prepare_runtime(self) -> bool:
