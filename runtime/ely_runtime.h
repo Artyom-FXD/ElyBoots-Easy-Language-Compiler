@@ -12,6 +12,9 @@ typedef uint64_t ely_value;
 /* ============================================================================
  * Ely-boxing (ExBoxing + Float Self-Tagging)
  * ============================================================================ */
+#pragma once
+#include <stdint.h>
+#include <string.h>
 
 #define ELY_TAG_MASK          0x7ULL
 
@@ -20,11 +23,11 @@ typedef uint64_t ely_value;
 #define ELY_TAG_INT           0x1ULL  // 001 - Маленькое целое число (Smi / Fixnum, 61 бит)
 #define ELY_TAG_STR0          0x2ULL  // 010 - Immediate-строка (Длина до 7 байт прямо в значении)
 #define ELY_TAG_SPECIAL       0x3ULL  // 011 - Константы и мелкие типы (Bool, Null, Char, Byte)
-// Теги 100, 101, 110, 111 (Бит 2 выставлен в 1) заняты под нативные Float
+// Теги 100, 101, 110, 111 (Бит 2 выставлен в 1) монопольно заняты под нативные Float (flt)
 
-#define ELY_STR_LEN_SHIFT   3
-#define ELY_STR_LEN_MASK    0x7ULL
-#define ELY_STR_DATA_SHIFT  6
+#define ELY_STR_LEN_SHIFT     3
+#define ELY_STR_LEN_MASK      0x7ULL
+#define ELY_STR_DATA_SHIFT    6
 
 // Подтеги для ELY_TAG_SPECIAL (Биты 3-7)
 #define ELY_SUBTAG_MASK       (0x1FULL << 3)
@@ -40,18 +43,50 @@ typedef uint64_t ely_value;
 #define ELY_VAL_NULL          (ELY_TAG_SPECIAL | ELY_SUBTAG_NULL)
 #define ELY_VAL_UNDEFINED     (ELY_TAG_SPECIAL | ELY_SUBTAG_UNDEFINED)
 
-#define ELY_VAL_MASK       0x0000FFFFFFFFFFFFULL  // Lower 48 bits for pointer payloads
-#define ELY_TAG_BOOL       0xFFFC000000000000ULL  // Specific tag for booleans
-#define ELY_TAG_STRING     0xFFFD000000000000ULL  // Tag for heap-allocated strings
-#define ELY_TAG_PTR        0xFFFB000000000000ULL
+/* ============================================================================
+ * Предикаты типов (Быстрые проверки за 1 такт)
+ * ============================================================================ */
 
-#define ELY_PAYLOAD_MASK   0x00FFFFFFFFFFFFFFULL // Нижние 7 байт под данные/указатели
-#define ELY_TAG_MASK       0xFF00000000000000ULL // Верхний 1 байт под тег
-#define ELY_TAG_NULL       0xFF00000000000000ULL // Наш замаскированный NULL
+// Если в младших 3 битах выставлен бит 2 (0x4), то это гарантированно Float
+#define ELY_IS_FLOAT(v)       (((v) & 0x4ULL) != 0)
 
-#define ELY_UNBOX_PTR(v)   ((void*)((v) & ELY_PAYLOAD_MASK))
-#define ELY_UNBOX_INT(v)   ((int64_t)ely_value_as_int(v))
+// Для остальных типов маска 0x7 работает идеально, т.к. у Float там будет 4,5,6 или 7
+#define ELY_IS_PTR(v)         (((v) & ELY_TAG_MASK) == ELY_TAG_PTR)
+#define ELY_IS_INT(v)         (((v) & ELY_TAG_MASK) == ELY_TAG_INT)
+#define ELY_IS_STR0(v)        (((v) & ELY_TAG_MASK) == ELY_TAG_STR0)
+#define ELY_IS_SPECIAL(v)     (((v) & ELY_TAG_MASK) == ELY_TAG_SPECIAL)
 
+#define ELY_IS_BOOL(v)        (ELY_IS_SPECIAL(v) && (((v) & ELY_SUBTAG_MASK) == ELY_SUBTAG_BOOL))
+#define ELY_IS_NULL(v)        ((v) == ELY_VAL_NULL)
+
+/* ============================================================================
+ * Распаковка / Unboxing (Безопасное извлечение payload)
+ * ============================================================================ */
+
+// Очищаем младшие 3 бита тега, восстанавливая чистый выровненный 64-битный адрес кучи
+#define ELY_UNBOX_PTR(v)      ((void*)((v) & ~ELY_TAG_MASK))
+
+// Если Fixnum сдвинут влево на 3 бита, то арифметический сдвиг вправо полностью сохранит знак
+#define ELY_UNBOX_INT(v)      (((int64_t)(v)) >> 3)
+
+/* ============================================================================
+ * Помощники для твоих нативных flt (Float Self-Tagging)
+ * ============================================================================ */
+
+// Упаковка 32-bit float в верхнюю половину 64-бит, выставляя бит 2 в единицу (0x4)
+inline uint64_t ely_box_float(float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof(float));
+    return ((uint64_t)bits << 32) | 0x4ULL;
+}
+
+// Распаковка обратно в честный float
+inline float ely_unbox_float(uint64_t v) {
+    uint32_t bits = (uint32_t)(v >> 32);
+    float f;
+    memcpy(&f, &bits, sizeof(float));
+    return f;
+}
 typedef struct ely_class ely_class;
 struct ely_class {
     const char* name;
@@ -66,13 +101,15 @@ typedef struct {
     const char** field_types;
 } ely_class_info;
 
-typedef enum {
-    GC_OBJ_STRING,
+#ifndef ELY_GC_OBJ_TYPES_DEFINED
+#define ELY_GC_OBJ_TYPES_DEFINED
+enum ElyGCObjType {
     GC_OBJ_VALUE,
     GC_OBJ_ARR,
     GC_OBJ_DICT,
-    GC_OBJ_DOUBLE
-} gc_obj_type;
+    GC_OBJ_STRING,
+};
+#endif
 
 typedef enum {
     ely_VALUE_NULL = 0,

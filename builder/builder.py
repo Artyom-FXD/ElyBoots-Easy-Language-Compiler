@@ -267,6 +267,9 @@ class ProjectBuilder:
         # Гарантируем наличие папки build внутри корня проекта
         self.build_dir.mkdir(parents=True, exist_ok=True)
 
+        if not self._prepare_runtime():
+            return False
+
         # --------------------------------------------------------------------
         # ЭТАП 1. ФРОНТЕНД И ГЕНЕРАЦИЯ C++ КОДА (Оригинальная логика сохранена)
         # --------------------------------------------------------------------
@@ -373,12 +376,18 @@ class ProjectBuilder:
         return True
 
     def _prepare_runtime(self) -> bool:
-        self.build_runtime = self.build_dir / 'runtime'
+        self.build_runtime = self.build_dir
         if self.compiler_runtime.exists():
-            if self.build_runtime.exists():
-                shutil.rmtree(self.build_runtime)
-            shutil.copytree(self.compiler_runtime, self.build_runtime)
+            for item in self.compiler_runtime.iterdir():
+                dest_item = self.build_runtime / item.name
+                if item.is_dir():
+                    if dest_item.exists():
+                        shutil.rmtree(dest_item)
+                    shutil.copytree(item, dest_item)
+                else:
+                    shutil.copy2(item, dest_item)
             return True
+            
         print(f"\n{TC.tag('ERROR')} Runtime directory not found at {self.compiler_runtime}")
         return False
 
