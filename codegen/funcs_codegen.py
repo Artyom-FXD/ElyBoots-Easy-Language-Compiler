@@ -1285,8 +1285,12 @@ class FuncCodeGen(CodeGenUtils):
     # -------------------------------------------------------------------
     # Вспомогательные
     # -------------------------------------------------------------------
-    def _wrap_result(self, code_or_str, ely_type: str) -> ExprCode:
+    def _wrap_result(self, code_or_str: Any, ely_type: str) -> ExprCode:
         """Оборачивает нативный результат в ely_value для возврата из методов класса."""
+        # Разворачиваем скрытое значение, если прилетел объект с __ex_value
+        if hasattr(code_or_str, '__ex_value'):
+            code_or_str = getattr(code_or_str, '__ex_value')
+
         if isinstance(code_or_str, str):
             expr = ExprCode(code_or_str, self.type_to_cpp(ely_type), ely_type)
         else:
@@ -1298,30 +1302,23 @@ class FuncCodeGen(CodeGenUtils):
         return self._wrap_to_ely(expr)
 
     def _wrap_to_ely(self, expr: ExprCode) -> ExprCode:
-        """Wrap native expression to ely_value."""
+        """Принудительно упаковывает нативное выражение во внутренний тип ely_value."""
         if expr.is_wrapped:
             return expr
-        t = expr.ely_type
-        if t in ('int','uint','more','umore','byte','ubyte'):
+            
+        t = self.resolve_type_alias(expr.ely_type)
+        
+        if t in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
             return ExprCode(f"ely_value_new_int({expr.code})", "ely_value", t)
         if t in ('flt', 'double'):
             return ExprCode(f"ely_value_new_double({expr.code})", "ely_value", t)
         if t == 'bool':
             return ExprCode(f"ely_value_new_bool({expr.code})", "ely_value", t)
         if t == 'str':
-            # Для char* → ely_value используем ely_value_new_string
-            if expr.raw_type == 'char*':
-                # Проверяем, если код уже содержит ely_value_new_string — не дублируем
-                if expr.code.startswith('ely_value_new_string('):
-                    return ExprCode(expr.code, "ely_value", t)
-                return ExprCode(f"ely_value_new_string({expr.code})", "ely_value", t)
-            # Если это уже объект-класс (указатель)
-            if expr.raw_type.endswith('*') and not expr.raw_type.startswith('ely_'):
-                return ExprCode(expr.code, "ely_value", t)
             return ExprCode(f"ely_value_new_string({expr.code})", "ely_value", t)
-        if t in self.classes_ast or t in getattr(self, 'interfaces_ast', {}):
-            return ExprCode(f"({t}*)({expr.code})", "ely_value", t)
-        return ExprCode(expr.code, "ely_value", t)
+            
+        # Для объектов классов и интерфейсов (передаются как указатели ClassName*)
+        return ExprCode(f"ely_value_new_object({expr.code})", "ely_value", t)
 
     # -------------------------------------------------------------------
     # Встраиваемые методы для массивов, строк, словарей

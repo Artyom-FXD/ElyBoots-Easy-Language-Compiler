@@ -131,13 +131,16 @@ arr* arr_copy(arr* a) {
 arr* arr_make(size_t count, ...) {
     arr* a = arr_new();
     if (!a) return NULL;
+    
     va_list args;
     va_start(args, count);
     for (size_t i = 0; i < count; i++) {
-        ely_value elem = va_arg(args, ely_value); // Достаем как плоский uint64_t
+        // Извлекаем упакованный 64-битный бокс ely_value из вариативного списка
+        ely_value elem = va_arg(args, ely_value);
         arr_push(a, elem);
     }
     va_end(args);
+    
     return a;
 }
 

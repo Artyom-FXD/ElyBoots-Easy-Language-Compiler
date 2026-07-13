@@ -103,12 +103,12 @@ typedef struct {
 
 #ifndef ELY_GC_OBJ_TYPES_DEFINED
 #define ELY_GC_OBJ_TYPES_DEFINED
-enum ElyGCObjType {
+typedef enum ElyGCObjType {
     GC_OBJ_VALUE,
     GC_OBJ_ARR,
     GC_OBJ_DICT,
     GC_OBJ_STRING,
-};
+} gc_obj_type_t;
 #endif
 
 typedef enum {
@@ -473,7 +473,7 @@ ely_bool isNull(ely_value value);
 ely_bool isIn(ely_value value, arr* in);
 
 // ------------------------ Рефлексия ------------------------
-char* ely_typeof(ely_value v);
+const char* ely_typeof(ely_value v);
 ely_value ely_value_get_fields(ely_value v);
 ely_value ely_value_get_methods(ely_value v);
 ely_value ely_value_call_method(ely_value obj, const char* method_name, ely_value* args, int argc); // args теперь массив из ely_value (одна звездочка)
@@ -487,7 +487,7 @@ void ely_chdir_to_exe_dir(void);
 
 /* ------------------------ Расширенное время ------------------------ */
 long long ely_time_now_ms(void);
-ely_value* ely_format_time(ely_value* seconds_val, ely_value* fmt_val);
+ely_value ely_format_time(ely_value seconds_val, ely_value fmt_val);
 long long ely_parse_time(const char* str, const char* fmt);
 
 /* ------------------------ Случайные числа ------------------------ */
@@ -495,8 +495,8 @@ ely_int ely_rand_int(void);
 ely_int ely_rand_int_range(ely_int min, ely_int max);
 ely_bool ely_rand_bool(void);
 
-ely_value* ely_make_arr(ely_value* elem);
-ely_value* ely_dyn_arr(ely_value* elem);
+ely_value ely_make_arr(ely_value elem);
+ely_value ely_dyn_arr(ely_value elem);
 
 #ifdef __cplusplus
 }

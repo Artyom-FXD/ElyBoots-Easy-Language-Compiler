@@ -118,7 +118,7 @@ class CppCodeGen(ClassCodeGen):
             '#endif',
             '',
             'static jmp_buf __ex_buf;',
-            'static ely_value volatile __ex_value = nullptr;',
+            'static ely_value volatile __ex_value = 0;',
             ''
         ]
         self.global_code = []

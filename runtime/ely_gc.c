@@ -12,11 +12,11 @@
 #include <string.h>
 #include "ely_runtime.h"
 
-#ifdef _WIN32
-#include <windows.h>
+#if defined(_WIN32) || defined(_WIN64)
+    #include <windows.h>
 #else
-#include <sys/mman.h>
-#include <unistd.h>
+    #include <sys/mman.h>
+    #include <unistd.h>
 #endif
 
 /* ============================================================================
@@ -51,11 +51,11 @@ static size_t old_size = 0;
 static gc_header_t* old_free_list = NULL;
 static gc_header_t* large_objects = NULL;
 
-static void*** roots = NULL;
+static uint64_t** roots = NULL;
 static size_t roots_count = 0;
 static size_t roots_capacity = 0;
 
-static void*** global_roots = NULL;
+static uint64_t** global_roots = NULL;
 static size_t global_roots_count = 0;
 static size_t global_roots_capacity = 0;
 
@@ -69,30 +69,30 @@ static bool gc_enabled = false;
 static int old_threshold_percent = 75;
 
 // GigaCage
-uintptr_t gc_cage_base = 0;
-uintptr_t gc_cage_limit = 0;
+uintptr_t g_cage_base = 0;
+uintptr_t g_cage_limit = 0;
 static char* cage_brk = NULL;
 
 /* ============================================================================
  * GIGA CAGE
  * ============================================================================ */
 void gc_init_cage(size_t custom_size_bytes) {
-    if (gc_cage_base != 0) return;
+    if (g_cage_base != 0) return;
     size_t cage_size = custom_size_bytes > 0 ? custom_size_bytes : (GC_DEFAULT_CAGE_SIZE_GB * 1024ULL * 1024ULL * 1024ULL);
 
 #ifdef _WIN32
-    gc_cage_base = (uintptr_t)VirtualAlloc(NULL, cage_size, MEM_RESERVE, PAGE_NOACCESS);
+    g_cage_base = (uintptr_t)VirtualAlloc(NULL, cage_size, MEM_RESERVE, PAGE_NOACCESS);
 #else
-    gc_cage_base = (uintptr_t)mmap(NULL, cage_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    g_cage_base = (uintptr_t)mmap(NULL, cage_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if ((void*)g_cage_base == MAP_FAILED) g_cage_base = 0;
 #endif
-    if (!gc_cage_base) {
+    if (!g_cage_base) {
         fprintf(stderr, "[ELYGC] FATAL ERROR: FAILED TO RESERVE %llu MB FOR GIGACAGE ADRESS SPACE\n", (unsigned long long)(cage_size / (1024 * 1024)));
         exit(1);
     }
 
-    g_cage_limit = gc_cage_base + cage_size;
-    cage_brk = (char*)gc_cage_base;
+    g_cage_limit = g_cage_base + cage_size;
+    cage_brk = (char*)g_cage_base;
 
     printf("[ELYGC] GigaCage initialized. Base: 0x%llx, Limit: 0x%llx (%.2f GB reserved)\n",
             (unsigned long long)g_cage_base,
@@ -101,216 +101,85 @@ void gc_init_cage(size_t custom_size_bytes) {
     );
 }
 
+void* cage_alloc_segment(size_t size) {
+    if (g_cage_base == 0) {
+        gc_init_cage(0);
+    }
+
+    // Выравниваем размер под страницу ОС (4 КБ) для корректной работы системных вызовов
+    size_t page_size = 4096;
+    size_t aligned_size = (size + page_size - 1) & ~(page_size - 1);
+
+    if (cage_brk + aligned_size > (char*)g_cage_limit) {
+        fprintf(stderr, "[ELYGC] FATAL ERROR: GigaCage out of memory during segment allocation!\n");
+        abort();
+    }
+
+    void* allocated = (void*)cage_brk;
+
+#ifdef _WIN32
+    // Переводим зарезервированные страницы Клетки в состояние COMMIT
+    if (VirtualAlloc(allocated, aligned_size, MEM_COMMIT, PAGE_READWRITE) == NULL) {
+        fprintf(stderr, "[ELYGC] FATAL ERROR: Failed to commit memory segment in GigaCage\n");
+        abort();
+    }
+#else
+    // На POSIX меняем защиту страниц с PROT_NONE на чтение/запись
+    if (mprotect(allocated, aligned_size, PROT_READ | PROT_WRITE) != 0) {
+        fprintf(stderr, "[ELYGC] FATAL ERROR: Failed to mprotect memory segment in GigaCage\n");
+        abort();
+    }
+#endif
+
+    cage_brk += aligned_size;
+    return allocated;
+}
+
+/**
+ * @brief Безопасный декоммит физической памяти внутри Клетки без разрушения общего региона адресов
+ */
+static void cage_decommit_segment(void* ptr, size_t size) {
+    if (!ptr) return;
+    size_t page_size = 4096;
+    size_t aligned_size = (size + page_size - 1) & ~(page_size - 1);
+
+#ifdef _WIN32
+    VirtualFree(ptr, aligned_size, MEM_DECOMMIT);
+#else
+    mprotect(ptr, aligned_size, PROT_NONE);
+#   ifdef MADV_DONTNEED
+    madvise(ptr, aligned_size, MADV_DONTNEED);
+#   endif
+#endif
+}
+
+/**
+ * @brief Стандартный 64-битный хэш FNV-1a для строк Ely
+ */
+static inline uint64_t ely_str_hash(const char* str) {
+    if (!str) return 0;
+    uint64_t hash = 14695981039346656037ULL;
+    while (*str) {
+        hash ^= (unsigned char)*str++;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 /* ============================================================================
     Ely-boxing
  * ============================================================================ */
 
-static inline uint8_t get_heap_obj_type(void* ptr) {
+uint8_t get_heap_obj_type(void* ptr) {
     gc_header_t* hdr = (gc_header_t*)((char*)ptr - HEADER_SIZE);
     return hdr->obj_type;
-}
-
-ely_value ely_to_int(ely_value v) {
-    if (ely_is_int(v)) return v;
-    
-    if (ely_is_double(v)) {
-        return ely_box_int((int64_t)ely_unbox_double(v));
-    }
-    
-    if (ely_is_bool(v)) {
-        return ely_box_int(ely_unbox_bool(v) ? 1 : 0);
-    }
-    
-    // Если это строка из кучи
-    if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
-        const char* str = (const char*)ely_unbox_ptr(v);
-        return ely_box_int((int64_t)strtoll(str, NULL, 10));
-    }
-    
-    // Если это инлайновая строка Tier 0 (реализация ниже в п.3)
-    if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
-        char buf[8];
-        ely_unbox_inline_str(v, buf);
-        return ely_box_int((int64_t)strtoll(buf, NULL, 10));
-    }
-    
-    return ely_box_int(0);
-}
-
-ely_value ely_to_double(ely_value v) {
-    if (ely_is_double(v)) return v;
-    
-    if (ely_is_int(v)) {
-        return ely_box_double((double)ely_unbox_int(v));
-    }
-    
-    if (ely_is_bool(v)) {
-        return ely_box_double(ely_unbox_bool(v) ? 1.0 : 0.0);
-    }
-    
-    if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
-        const char* str = (const char*)ely_unbox_ptr(v);
-        return ely_box_double(strtod(str, NULL));
-    }
-    
-    if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
-        char buf[8];
-        ely_unbox_inline_str(v, buf);
-        return ely_box_double(strtod(buf, NULL));
-    }
-    
-    return ely_box_double(0.0);
-}
-
-char* ely_value_to_string(ely_value v) {
-    char* buf = malloc(64); // Временный буфер под примитивы
-    if (ely_is_int(v)) {
-        snprintf(buf, 64, "%lld", (long long)ely_unbox_int(v));
-    } else if (ely_is_double(v)) {
-        snprintf(buf, 64, "%g", ely_unbox_double(v));
-    } else if (ely_is_bool(v)) {
-        snprintf(buf, 64, ely_unbox_bool(v) ? "true" : "false");
-    } else if (ely_is_null(v)) {
-        snprintf(buf, 64, "null");
-    } else if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
-        free(buf);
-        return strdup((const char*)ely_unbox_ptr(v));
-    } else if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
-        ely_unbox_inline_str(v, buf);
-    } else {
-        snprintf(buf, 64, "[object]");
-    }
-    return buf;
-}
-
-ely_value ely_make_arr(ely_value elem) {
-    // Создаем внутреннюю структуру массива
-    arr* a = arr_new(); 
-    
-    // Пушим элемент (теперь elem — это не указатель, а само 64-битное значение)
-    arr_push(a, elem); 
-    
-    // Упаковываем указатель на массив в ely_value
-    return ely_box_ptr(a);
-}
-
-ely_value ely_dyn_arr(ely_value elem) {
-    // В новой архитектуре динамический массив ничем не отличается
-    return ely_make_arr(elem);
-}
-
-/* ============================================================================
- * ely dynamic ops
- * ============================================================================ */
-
-/* ely_runtime.c */
-
-ely_value ely_value_add(ely_value a, ely_value b) {
-    // FAST PATH: Оба операнда — целые числа (Smi)
-    if ((a & ELY_TAG_MASK) == ELY_TAG_INT && (b & ELY_TAG_MASK) == ELY_TAG_INT) {
-        // Битовый трюк: сложение двух задвинутых чисел выдаст лишний тег 0x1. 
-        // Просто вычитаем 1, чтобы восстановить тег ELY_TAG_INT (0x1)
-        return a + b - 1; 
-    }
-
-    // FAST PATH: Оба операнда — нативные Double (Бит 2 горит у обоих)
-    if (((a & 0x4ULL) != 0) && ((b & 0x4ULL) != 0)) {
-        union { ely_value u; double d; } va, vb, vres;
-        va.u = a; vb.u = b;
-        vres.d = va.d + vb.d;
-        if ((vres.u & 0x4ULL) != 0) return vres.u; // Результат тоже инлайновый double
-        return ely_value_new_double_boxed(vres.d);
-    }
-
-    // SLOW PATH: Смешанные типы (Int + Double, кучные Double или строки)
-    if (ely_is_double(a) || ely_is_double(b)) {
-        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
-        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
-        return ely_box_double(da + db);
-    }
-
-    return ely_box_int(0);
-}
-
-ely_value ely_value_sub(ely_value a, ely_value b) {
-    // FAST PATH: Оба операнда Int
-    if ((a & ELY_TAG_MASK) == ELY_TAG_INT && (b & ELY_TAG_MASK) == ELY_TAG_INT) {
-        // При вычитании теги аннулируются (1 - 1 = 0), поэтому прибавляем обратно 1
-        return a - b + 1;
-    }
-
-    if (ely_is_double(a) || ely_is_double(b)) {
-        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
-        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
-        return ely_box_double(da - db);
-    }
-    return ely_box_int(0);
-}
-
-ely_value ely_value_mul(ely_value a, ely_value b) {
-    // Для умножения распаковываем аппаратно через сдвиг, так как биты перемножаются сложнее
-    if (ely_is_int(a) && ely_is_int(b)) {
-        return ely_box_int(ely_unbox_int(a) * ely_unbox_int(b));
-    }
-    if (ely_is_double(a) || ely_is_double(b)) {
-        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
-        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
-        return ely_box_double(da * db);
-    }
-    return ely_box_int(0);
-}
-
-ely_value ely_value_eq(ely_value a, ely_value b) {
-    // Если битовые паттерны идентичны — они 100% равны (Int, Bool, Null, одинаковые указатели)
-    if (a == b) return ELY_VAL_TRUE;
-
-    // Сравнение строк (потенциально одна в куче, другая инлайновая)
-    bool a_str = (ely_is_ptr(a) && get_heap_obj_type(ely_unbox_ptr(a)) == GC_OBJ_STRING) || ((a & ELY_TAG_MASK) == ELY_TAG_STR0);
-    bool b_str = (ely_is_ptr(b) && get_heap_obj_type(ely_unbox_ptr(b)) == GC_OBJ_STRING) || ((b & ELY_TAG_MASK) == ELY_TAG_STR0);
-
-    if (a_str && b_str) {
-        char buf_a[64];
-        char buf_b[64];
-        
-        if ((a & ELY_TAG_MASK) == ELY_TAG_STR0) ely_unbox_inline_str(a, buf_a);
-        else strcpy(buf_a, (const char*)ely_unbox_ptr(a));
-
-        if ((b & ELY_TAG_MASK) == ELY_TAG_STR0) ely_unbox_inline_str(b, buf_b);
-        else strcpy(buf_b, (const char*)ely_unbox_ptr(b));
-
-        return strcmp(buf_a, buf_b) == 0 ? ELY_VAL_TRUE : ELY_VAL_FALSE;
-    }
-
-    return ELY_VAL_FALSE;
-}
-
-/* ============================================================================
- * Strs inlining
- * ============================================================================ */
-
-static inline ely_value ely_box_inline_str(const char* s, size_t len) {
-    // Записываем тег строки 010 и сдвинутую длину в биты 3-5
-    ely_value v = ELY_TAG_STR0 | (len << 3);
-    
-    // Побайтово копируем строку в старшие биты, начиная с 6 бита
-    for (size_t i = 0; i < len; i++) {
-        v |= ((ely_value)(uint8_t)s[i]) << (6 + (i * 8));
-    }
-    return v;
-}
-
-static inline void ely_unbox_inline_str(ely_value v, char* buf) {
-    size_t len = (v >> 3) & 0x7ULL; // Извлекаем длину из бит 3-5
-    
-    for (size_t i = 0; i < len; i++) {
-        buf[i] = (char)((v >> (6 + (i * 8))) & 0xFFULL);
-    }
-    buf[len] = '\0'; // Гарантируем null-терминатор для Си-функций
 }
 
 /* ============================================================================
  * Прототипы статических функций (чтобы избежать неявных объявлений)
  * ============================================================================ */
+
+static gc_header_t* gc_move_object(gc_header_t* old_hdr);
 
 static void* allocate_old(size_t size, gc_obj_type_t type);
 static void collect_young(void);
@@ -327,6 +196,76 @@ static void compact_old(void);
 static bool is_in_old_generation(void* ptr);
 static void update_references(void* obj, ptrdiff_t delta);
 static bool expand_old_heap(size_t additional_bytes);
+
+// ============================================================================
+
+/**
+ * @brief Эвакуирует объект из текущего полупространства молодого поколения.
+ * Перемещает его либо в выжившее полупространство, либо продвигает в старое поколение.
+ */
+static gc_header_t* gc_move_object(gc_header_t* old_hdr) {
+    if (!old_hdr) return NULL;
+
+    // 1. Проверяем, не был ли объект уже перемещен (защита от повторного копирования циклических ссылок)
+    if ((old_hdr->flags & GC_FLAG_MARKED) && old_hdr->u.forwarding != NULL) {
+        return old_hdr->u.forwarding;
+    }
+
+    // 2. СТРАТЕГИЯ PROMOTION (Продвижение в старшее поколение)
+    // Если объект пережил достаточное количество сборок мусора, эвакуируем его в Old Gen
+    if (old_hdr->age >= PROMOTION_AGE) {
+        size_t body_size = old_hdr->size - HEADER_SIZE;
+        
+        // Выделяем память в свободном списке или на вершине старого поколения
+        void* new_mem = allocate_old(body_size, (gc_obj_type_t)old_hdr->obj_type);
+        if (!new_mem) {
+            fprintf(stderr, "[ELYGC] FATAL: Promotion failed during gc_move_object (Old Gen Out of Memory)\n");
+            abort();
+        }
+
+        // Копируем только тело (полезную нагрузку), так как allocate_old сам инициализирует свежий заголовок
+        memcpy(new_mem, header_to_ptr(old_hdr), body_size);
+
+        gc_header_t* new_hdr = ptr_to_header(new_mem);
+        new_hdr->flags |= GC_FLAG_IN_OLD;
+        new_hdr->age = 0; // Сбрасываем счетчик поколений для старой кучи
+
+        // Оставляем адрес пересылки (Forwarding Pointer) в старом заголовке
+        old_hdr->flags |= GC_FLAG_MARKED;
+        old_hdr->u.forwarding = new_hdr;
+
+        return new_hdr;
+    }
+
+    // 3. СТРАТЕГИЯ EVACUATION (Перенос в соседнее полупространство молодого поколения)
+    size_t total_size = ALIGN_UP(old_hdr->size, GC_ALIGNMENT);
+    
+    // Проверяем, влезет ли объект в текущий регион To-Space
+    if (young_top + total_size > young_limit) {
+        fprintf(stderr, "[ELYGC] FATAL: Young generation overflow during object evacuation!\n");
+        abort();
+    }
+
+    // Аллоцируем память простым сдвигом указателя (Bump Allocation)
+    gc_header_t* new_hdr = (gc_header_t*)young_top;
+    young_top += total_size;
+
+    // Копируем объект целиком вместе с его текущим мета-заголовком
+    memcpy(new_hdr, old_hdr, old_hdr->size);
+    
+    // Объект успешно пережил сборку в пределах Nursery, инкрементируем его возраст
+    new_hdr->age++;
+    
+    // На новом месте объект чист: сбрасываем маркеры перемещения
+    new_hdr->flags &= ~GC_FLAG_MARKED;
+    new_hdr->u.forwarding = NULL;
+
+    // Записываем мост (Forwarding Pointer) в старый заголовок, чтобы все остальные ссылки на него обновились
+    old_hdr->flags |= GC_FLAG_MARKED;
+    old_hdr->u.forwarding = new_hdr;
+
+    return new_hdr;
+}
 
 /* ============================================================================
  * Низкоуровневое управление памятью ОС
@@ -370,7 +309,7 @@ static void* os_resize(void* old_ptr, size_t old_size, size_t new_size) {
 static void ensure_roots_capacity(void) {
     if (roots_count >= roots_capacity) {
         roots_capacity = roots_capacity ? roots_capacity * 2 : 64;
-        roots = realloc(roots, roots_capacity * sizeof(void**));
+        roots = (uint64_t**)realloc(roots, roots_capacity * sizeof(void**));
         if (!roots) { fprintf(stderr, "GC: out of memory for roots\n"); abort(); }
     }
 }
@@ -378,7 +317,7 @@ static void ensure_roots_capacity(void) {
 static void ensure_global_roots_capacity(void) {
     if (global_roots_count >= global_roots_capacity) {
         global_roots_capacity = global_roots_capacity ? global_roots_capacity * 2 : 64;
-        global_roots = realloc(global_roots, global_roots_capacity * sizeof(void**));
+        global_roots = (uint64_t**)realloc(global_roots, global_roots_capacity * sizeof(void**));
         if (!global_roots) { fprintf(stderr, "GC: out of memory for global roots\n"); abort(); }
     }
 }
@@ -386,7 +325,7 @@ static void ensure_global_roots_capacity(void) {
 static void ensure_dirty_capacity(void) {
     if (dirty_count >= dirty_capacity) {
         dirty_capacity = dirty_capacity ? dirty_capacity * 2 : 64;
-        dirty_set = realloc(dirty_set, dirty_capacity * sizeof(gc_header_t*));
+        dirty_set = (gc_header_t**)realloc(dirty_set, dirty_capacity * sizeof(gc_header_t*));
         if (!dirty_set) { fprintf(stderr, "GC: out of memory for dirty set\n"); abort(); }
     }
 }
@@ -499,7 +438,7 @@ static void* allocate_large(size_t size, gc_obj_type_t type) {
 
 void* gc_alloc(size_t size, gc_obj_type_t type) {
     if (!gc_enabled) {
-        void* ptr = malloc(size);
+        void* ptr = (void*)malloc(size);
         if (ptr) memset(ptr, 0, size);
         return ptr;
     }
@@ -516,7 +455,7 @@ void* gc_alloc(size_t size, gc_obj_type_t type) {
 }
 
 void* gc_calloc(size_t size, gc_obj_type_t type) {
-    void* ptr = gc_alloc(size, type);
+    void* ptr = (void*)gc_alloc(size, type);
     if (ptr) memset(ptr, 0, size);
     return ptr;
 }
@@ -608,7 +547,7 @@ static void scan_object_fields(void* obj_ptr) {
                     }
 
                     int vt = ely_get_type(e->value);
-                    if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == vt == ely_VALUE_STRING) {
+                    if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == ely_VALUE_STRING) {
                         void* new_val = copy_object(ELY_UNBOX_PTR(e->value));
                         ELY_REPACK_PTR(e->value, new_val, vt);
                     }
@@ -635,10 +574,14 @@ static void collect_young(void) {
     void** scan_ptr = (void**)young_from;
 
     for (size_t i = 0; i < roots_count; i++) {
-        if (*roots[i]) *roots[i] = copy_object(*roots[i]);
+        if (*roots[i] && ELY_IS_PTR(*roots[i])) {
+			*roots[i] = (uint64_t)copy_object(ELY_UNBOX_PTR(*roots[i]));
+		}
     }
     for (size_t i = 0; i < global_roots_count; i++) {
-        if (*global_roots[i]) *global_roots[i] = copy_object(*global_roots[i]);
+		if (*global_roots[i] && ELY_IS_PTR(*global_roots[i])) {
+			*global_roots[i] = (uint64_t)copy_object(ELY_UNBOX_PTR(*global_roots[i]));
+		}
     }
 
     for (size_t i = 0; i < dirty_count; i++) {
@@ -696,11 +639,11 @@ static void mark_object(void* obj_ptr) {
                     while (e) {
                         mark_object(e); // Маркируем саму ноду списка коллизий
                         int kt = ely_get_type(e->key);
-                        if (kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == kt == ely_VALUE_STRING) {
+                        if (kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == ely_VALUE_STRING) {
                             mark_object(ELY_UNBOX_PTR(e->key));
                         }
                         int vt = ely_get_type(e->value);
-                        if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == vt == ely_VALUE_STRING) {
+                        if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == ely_VALUE_STRING) {
                             mark_object(ELY_UNBOX_PTR(e->value));
                         }
                         e = e->next;
@@ -779,7 +722,7 @@ static void compact_old(void) {
 
     // Обновляем корни
     for (size_t i = 0; i < roots_count; i++) {
-        void** root = roots[i];
+        void** root = (void**)roots[i];
         if (*root && is_in_old_generation(*root)) {
             gc_header_t* hdr = ptr_to_header(*root);
             if (hdr->flags & GC_FLAG_MARKED) {
@@ -788,7 +731,7 @@ static void compact_old(void) {
         }
     }
     for (size_t i = 0; i < global_roots_count; i++) {
-        void** root = global_roots[i];
+        void** root = (void**)global_roots[i];
         if (*root && is_in_old_generation(*root)) {
             gc_header_t* hdr = ptr_to_header(*root);
             if (hdr->flags & GC_FLAG_MARKED) {
@@ -877,7 +820,7 @@ static bool is_in_old_generation(void* ptr) {
 static bool expand_old_heap(size_t additional_bytes) {
     if (OLD_MAX_SIZE > 0 && old_size + additional_bytes > OLD_MAX_SIZE) return false;
     size_t new_size = old_size + additional_bytes;
-    char* new_start = os_resize(old_start, old_size, new_size);
+    char* new_start = (char*)os_resize(old_start, old_size, new_size);
     if (!new_start) return false;
 
     ptrdiff_t delta = new_start - old_start;
@@ -912,12 +855,14 @@ static void collect_old(void) {
     printf("[GC] marking roots (%zu local, %zu global)...\n", roots_count, global_roots_count); fflush(stdout);
     for (size_t i = 0; i < roots_count; i++) {
         if (*roots[i]) {
-            printf("[GC] root %zu: %p\n", i, *roots[i]); fflush(stdout);
-            mark_object(*roots[i]);
+            printf("[GC] root %zu: %p\n", i, (void*)(uintptr_t)*roots[i]); fflush(stdout);
+            mark_object((void*)*roots[i]);
         }
     }
     for (size_t i = 0; i < global_roots_count; i++)
-        if (*global_roots[i]) mark_object(*global_roots[i]);
+        if (*global_roots[i] && ELY_IS_PTR(*global_roots[i])) {
+			mark_object(ELY_UNBOX_PTR(*global_roots[i]));
+		}
 
     // Маркировка из молодого поколения
     printf("[GC] marking from young generation...\n"); fflush(stdout);
@@ -969,11 +914,12 @@ static void collect_old(void) {
             prev = &curr->u.next_free;
             curr = curr->u.next_free;
         } else {
-            gc_header_t* to_free = curr;
-            *prev = curr->u.next_free;
-            curr = curr->u.next_free;
-            os_free(to_free, to_free->size);
-        }
+			gc_header_t* to_free = curr;
+			*prev = curr->u.next_free;
+			curr = curr->u.next_free;
+			// ОШИБКА: os_free(to_free, to_free->size);
+			cage_decommit_segment(to_free, to_free->size); // ИСПРАВЛЕНИЕ
+		}
     }
 
     printf("[GC] collect_old finished\n"); fflush(stdout);
@@ -1035,19 +981,23 @@ void gc_init(void) {
 
 void gc_shutdown(void) {
     if (!young_from) return;
-    os_free(young_from, 2 * YOUNG_SIZE);
-    os_free(old_start, old_size);
 
+    // Декоммитим крупные объекты
     gc_header_t* curr = large_objects;
     while (curr) {
         gc_header_t* next = curr->u.next_free;
-        os_free(curr, curr->size);
+        cage_decommit_segment(curr, curr->size);
         curr = next;
     }
 
     free(roots);
     free(global_roots);
     free(dirty_set);
+
+    // Освобождаем всю Клетку целиком из ОС (одним системным вызовом базового адреса)
+    if (g_cage_base) {
+        os_free((void*)g_cage_base, g_cage_limit - g_cage_base);
+    }
 
     young_from = young_to = young_top = young_limit = NULL;
     old_start = old_top = old_limit = NULL;
@@ -1056,19 +1006,21 @@ void gc_shutdown(void) {
     roots = NULL;
     global_roots = NULL;
     dirty_set = NULL;
+    g_cage_base = g_cage_limit = 0;
+    cage_brk = NULL;
 }
 
 /* ============================================================================
  * Публичные функции управления корнями и барьерами
  * ============================================================================ */
 
-void gc_add_root(void** ptr) {
+void gc_add_root(uint64_t* ptr) {
     if (!gc_enabled) return;
     ensure_roots_capacity();
     roots[roots_count++] = ptr;
 }
 
-void gc_remove_root(void** ptr) {
+void gc_remove_root(uint64_t* ptr) {
     if (!gc_enabled) return;
     for (size_t i = 0; i < roots_count; i++) {
         if (roots[i] == ptr) {
@@ -1081,13 +1033,13 @@ void gc_remove_root(void** ptr) {
 void gc_add_global_root(void** ptr) {
     if (!gc_enabled) return;
     ensure_global_roots_capacity();
-    global_roots[global_roots_count++] = ptr;
+    global_roots[global_roots_count++] = (uint64_t*)ptr;
 }
 
 void gc_remove_global_root(void** ptr) {
     if (!gc_enabled) return;
     for (size_t i = 0; i < global_roots_count; i++) {
-        if (global_roots[i] == ptr) {
+        if (global_roots[i] == (uint64_t*)ptr) {
             global_roots[i] = global_roots[--global_roots_count];
             return;
         }
@@ -1293,7 +1245,7 @@ void gc_scan_value(ely_value v) {
     // Если биты говорят, что это указатель на объект внутри GigaCage
     if (ely_is_ptr(v)) {
         void* ptr = (void*)ely_unbox_ptr(v);
-        gc_mark(ptr); // Маркируем сам объект в куче
+        mark_object(ptr); // Маркируем сам объект в куче
     }
 }
 

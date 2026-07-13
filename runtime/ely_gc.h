@@ -55,6 +55,10 @@ extern "C" {
 extern uintptr_t g_cage_base;
 extern uintptr_t g_cage_limit;
 
+void* cage_alloc_segment(size_t size);
+static void cage_decommit_segment(void* ptr, size_t size);
+static inline uint64_t ely_str_hash(const char* str);
+
 void gc_init_cage(size_t custom_size_bytes);
 
 /* ============================================================================
@@ -63,12 +67,12 @@ void gc_init_cage(size_t custom_size_bytes);
 
 #ifndef ELY_GC_OBJ_TYPES_DEFINED
 #define ELY_GC_OBJ_TYPES_DEFINED
-enum ElyGCObjType {
+typedef enum ElyGCObjType {
     GC_OBJ_VALUE,       /**< ely_value* – содержит указатели на другие объекты */
     GC_OBJ_ARR,         /**< arr* – массив указателей на ely_value */
     GC_OBJ_DICT,        /**< dict* – словарь с ключами и значениями */
     GC_OBJ_STRING,      /**< char* – строка (не содержит указателей) */
-};
+} gc_obj_type_t;
 #endif
 
 /* ============================================================================
@@ -296,7 +300,7 @@ void gc_set_old_threshold(int percent);
 /* ----------------------------------------------------------------------------
  * Вспомогательные макросы для кодогенерации
  * -------------------------------------------------------------------------- */
-
+uint8_t get_heap_obj_type(void* val);
 /**
  * @brief Регистрирует переменную как корень и автоматически удаляет при выходе
  *        из области видимости (используется в C++/C с деструкторами).

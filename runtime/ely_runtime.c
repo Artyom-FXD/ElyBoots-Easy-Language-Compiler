@@ -14,10 +14,10 @@
 #include <dlfcn.h>
 #endif
 
-__attribute__((weak))
-ely_class_info* ely_get_class_info(const char* name) {
-    return NULL;
-}
+//__attribute__((weak))
+//ely_class_info* ely_get_class_info(const char* name) {
+//    return NULL;
+//}
 
 #ifndef _WIN32
 #define my_strtoll strtoll
@@ -87,7 +87,7 @@ typedef struct {
 
 // Создание кучного double (Slow Path)
 ely_value ely_value_new_double_boxed(double d) {
-    ely_boxed_double_t* obj = (ely_boxed_double_t*)gc_alloc(sizeof(ely_boxed_double_t), GC_OBJ_DOUBLE);
+    ely_boxed_double_t* obj = (ely_boxed_double_t*)gc_alloc(sizeof(ely_boxed_double_t), GC_OBJ_VALUE);
     if (!obj) {
         fprintf(stderr, "Fatal: Out of memory while boxing double.\n");
         abort();
@@ -140,12 +140,6 @@ ely_value ely_value_new_bool(int val) {
 
 ely_value ely_value_new_array(arr* a) {
     return ELY_TAG_PTR | ((uint64_t)a & ELY_PAYLOAD_MASK);
-}
-
-ely_value ely_value_new_string(const char *s) {
-    if (!s) return ELY_TAG_NULL;
-    char* dup = gc_strdup(s);
-    return ((ely_value)ely_VALUE_STRING << 56) | ((uint64_t)dup & ELY_PAYLOAD_MASK);
 }
 
 ely_value ely_value_new_object(dict* d) {
@@ -208,8 +202,11 @@ ely_value ely_value_index(ely_value v, ely_value index) {
     } else if (v_type == ely_VALUE_OBJECT) {
         if (idx_type == ely_VALUE_STRING) {
             dict* d = (dict*)ELY_UNBOX_PTR(v);
-            char* str = (char*)ELY_UNBOX_PTR(index);
-            return dict_get_str(d, str);
+            // БЕЗОПАСНОЕ ИЗВЛЕЧЕНИЕ: Строка может быть инлайновой (SSO)
+            char* str = ely_value_to_string(index);
+            ely_value res = dict_get_str(d, str);
+            free(str); // Освобождаем буфер, выделенный ely_value_to_string
+            return res;
         }
     }
     return ely_value_new_null();
@@ -239,8 +236,9 @@ void ely_value_set_index(ely_value v, ely_value index, ely_value value) {
         }
     } else if (v_type == ely_VALUE_OBJECT && idx_type == ely_VALUE_STRING) {
         dict* d = (dict*)ELY_UNBOX_PTR(v);
-        char* str = (char*)ELY_UNBOX_PTR(index);
+        char* str = ely_value_to_string(index);
         dict_set_str(d, str, value);
+        free(str);
     }
 }
 
@@ -259,58 +257,59 @@ int ely_value_as_bool(ely_value v) {
 }
 
 ely_value ely_value_add(ely_value a, ely_value b) {
-    int type_a = ely_get_type(a);
-    int type_b = ely_get_type(b);
+    // FAST PATH: Оба операнда — целые числа (Smi)
+    if ((a & ELY_TAG_MASK) == ELY_TAG_INT && (b & ELY_TAG_MASK) == ELY_TAG_INT) {
+        // Битовый трюк: сложение двух задвинутых чисел выдаст лишний тег 0x1. 
+        // Просто вычитаем 1, чтобы восстановить тег ELY_TAG_INT (0x1)
+        return a + b - 1; 
+    }
 
-    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
-        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
-        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
-        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
-        if (type_a == ely_VALUE_INT && type_b == ely_VALUE_INT)
-            return ely_value_new_int((long long)(da + db));
-        else
-            return ely_value_new_double(da + db);
+    // FAST PATH: Оба операнда — нативные Double (Бит 2 горит у обоих)
+    if (((a & 0x4ULL) != 0) && ((b & 0x4ULL) != 0)) {
+        union { ely_value u; double d; } va, vb, vres;
+        va.u = a; vb.u = b;
+        vres.d = va.d + vb.d;
+        if ((vres.u & 0x4ULL) != 0) return vres.u; // Результат тоже инлайновый double
+        return ely_value_new_double_boxed(vres.d);
     }
-    if (type_a == ely_VALUE_STRING || type_b == ely_VALUE_STRING) {
-        char* a_str = (type_a == ely_VALUE_STRING) ? ely_str_dup((char*)ELY_UNBOX_PTR(a)) : ely_value_to_string(a);
-        char* b_str = (type_b == ely_VALUE_STRING) ? ely_str_dup((char*)ELY_UNBOX_PTR(b)) : ely_value_to_string(b);
-        char* result = ely_str_concat(a_str, b_str);
-        return ely_value_new_string(result);
+
+    // SLOW PATH: Смешанные типы (Int + Double, кучные Double или строки)
+    if (ely_is_double(a) || ely_is_double(b)) {
+        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
+        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
+        return ely_box_double(da + db);
     }
-    char* a_str = ely_value_to_json(a);
-    char* b_str = ely_value_to_json(b);
-    char* s = ely_str_concat(a_str, b_str);
-    return ely_value_new_string(s);
+
+    return ely_box_int(0);
 }
 
+
 ely_value ely_value_sub(ely_value a, ely_value b) {
-    int type_a = ely_get_type(a);
-    int type_b = ely_get_type(b);
-    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
-        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
-        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
-        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
-        if (type_a == ely_VALUE_INT && type_b == ely_VALUE_INT)
-            return ely_value_new_int((long long)(da - db));
-        else
-            return ely_value_new_double(da - db);
+    // FAST PATH: Оба операнда Int
+    if ((a & ELY_TAG_MASK) == ELY_TAG_INT && (b & ELY_TAG_MASK) == ELY_TAG_INT) {
+        // При вычитании теги аннулируются (1 - 1 = 0), поэтому прибавляем обратно 1
+        return a - b + 1;
     }
-    return ely_value_new_null();
+
+    if (ely_is_double(a) || ely_is_double(b)) {
+        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
+        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
+        return ely_box_double(da - db);
+    }
+    return ely_box_int(0);
 }
 
 ely_value ely_value_mul(ely_value a, ely_value b) {
-    int type_a = ely_get_type(a);
-    int type_b = ely_get_type(b);
-    if ((type_a == ely_VALUE_INT || type_a == ely_VALUE_DOUBLE) &&
-        (type_b == ely_VALUE_INT || type_b == ely_VALUE_DOUBLE)) {
-        double da = (type_a == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(a) : ely_unbox_double(a);
-        double db = (type_b == ely_VALUE_INT) ? (double)ELY_UNBOX_INT(b) : ely_unbox_double(b);
-        if (type_a == ely_VALUE_INT && type_b == ely_VALUE_INT)
-            return ely_value_new_int((long long)(da * db));
-        else
-            return ely_value_new_double(da * db);
+    // Для умножения распаковываем аппаратно через сдвиг, так как биты перемножаются сложнее
+    if (ely_is_int(a) && ely_is_int(b)) {
+        return ely_box_int(ely_unbox_int(a) * ely_unbox_int(b));
     }
-    return ely_value_new_null();
+    if (ely_is_double(a) || ely_is_double(b)) {
+        double da = ely_is_double(a) ? ely_unbox_double(a) : (double)ely_unbox_int(a);
+        double db = ely_is_double(b) ? ely_unbox_double(b) : (double)ely_unbox_int(b);
+        return ely_box_double(da * db);
+    }
+    return ely_box_int(0);
 }
 
 ely_value ely_value_div(ely_value a, ely_value b) {
@@ -338,18 +337,29 @@ ely_value ely_value_mod(ely_value a, ely_value b) {
     return ely_value_new_null();
 }
 
-ely_value ely_value_eq(ely_value a, ely_value b) {
-    int type_a = ely_get_type(a);
-    int type_b = ely_get_type(b);
-    if (type_a != type_b) return ely_value_new_bool(0);
 
-    switch (type_a) {
-        case ely_VALUE_BOOL:   return ely_value_new_bool(ELY_UNBOX_BOOL(a) == ELY_UNBOX_BOOL(b));
-        case ely_VALUE_INT:    return ely_value_new_bool(ELY_UNBOX_INT(a) == ELY_UNBOX_INT(b));
-        case ely_VALUE_DOUBLE: return ely_value_new_bool(ely_unbox_double(a) == ely_unbox_double(b));
-        case ely_VALUE_STRING: return ely_value_new_bool(strcmp((char*)ELY_UNBOX_PTR(a), (char*)ELY_UNBOX_PTR(b)) == 0);
-        default:               return ely_value_new_bool(a == b);
+ely_value ely_value_eq(ely_value a, ely_value b) {
+    // Если битовые паттерны идентичны — они 100% равны (Int, Bool, Null, одинаковые указатели)
+    if (a == b) return ELY_VAL_TRUE;
+
+    // Сравнение строк (потенциально одна в куче, другая инлайновая)
+    bool a_str = (ely_is_ptr(a) && get_heap_obj_type(ely_unbox_ptr(a)) == GC_OBJ_STRING) || ((a & ELY_TAG_MASK) == ELY_TAG_STR0);
+    bool b_str = (ely_is_ptr(b) && get_heap_obj_type(ely_unbox_ptr(b)) == GC_OBJ_STRING) || ((b & ELY_TAG_MASK) == ELY_TAG_STR0);
+
+    if (a_str && b_str) {
+        char buf_a[64];
+        char buf_b[64];
+        
+        if ((a & ELY_TAG_MASK) == ELY_TAG_STR0) ely_unbox_inline_str(a, buf_a);
+        else strcpy(buf_a, (const char*)ely_unbox_ptr(a));
+
+        if ((b & ELY_TAG_MASK) == ELY_TAG_STR0) ely_unbox_inline_str(b, buf_b);
+        else strcpy(buf_b, (const char*)ely_unbox_ptr(b));
+
+        return strcmp(buf_a, buf_b) == 0 ? ELY_VAL_TRUE : ELY_VAL_FALSE;
     }
+
+    return ELY_VAL_FALSE;
 }
 
 ely_value ely_value_ne(ely_value a, ely_value b) {
@@ -487,59 +497,6 @@ void ely_dict_del(ely_value dict_val, ely_value key) {
 }
 
 // ------------------ Reflection & Methods --------------------
-char* ely_typeof(ely_value v) {
-    switch (ely_get_type(v)) {
-        case ely_VALUE_NULL:   return "null";
-        case ely_VALUE_BOOL:   return "bool";
-        case ely_VALUE_INT:    return "int";
-        case ely_VALUE_DOUBLE: return "double";
-        case ely_VALUE_STRING: return "string";
-        case ely_VALUE_ARRAY:  return "array";
-        case ely_VALUE_OBJECT: return "object";
-        default:               return "unknown";
-    }
-}
-
-ely_value ely_value_call_method(ely_value obj, const char* method_name, ely_value* args, int argc) {
-    int obj_type = ely_get_type(obj);
-    void* raw_obj = ELY_UNBOX_PTR(obj);
-
-    if (obj_type == ely_VALUE_ARRAY) {
-        arr* a = (arr*)raw_obj;
-        if (strcmp(method_name, "push") == 0 && argc == 1) {
-            arr_push(a, args[0]);
-            return ely_value_new_null();
-        }
-        else if (strcmp(method_name, "len") == 0 && argc == 0) {
-            return ely_value_new_int(arr_len(a));
-        }
-    }
-    else if (obj_type == ely_VALUE_STRING) {
-        const char* s = (const char*)raw_obj;
-        if (!s) return ely_value_new_null();
-        if (strcmp(method_name, "len") == 0 && argc == 0)
-            return ely_value_new_int(strlen(s));
-    }
-    else if (obj_type == ely_VALUE_OBJECT) {
-        dict* d = (dict*)raw_obj;
-        if (strcmp(method_name, "size") == 0 && argc == 0) {
-            return ely_value_new_int(dict_size(d));
-        }
-    }
-    return ely_value_new_null();
-}
-
-// Проверки типов (вместо v->type == ely_VALUE_INT)
-static inline bool ely_is_int(ely_value v) {
-    return (v & ELY_TAG_MASK) == ELY_TAG_INT;
-}
-static inline bool ely_is_ptr(ely_value v) {
-    return (v & ELY_TAG_MASK) == ELY_TAG_PTR;
-}
-static inline bool ely_is_double(ely_value v) {
-    // В NaN-boxing всё, что меньше ELY_MIN_TAG_VALUE — честный double
-    return v < 0xFFF8000000000000ULL;
-}
 
 // Извлечение сырых значений (вместо v->u.int_val)
 static inline long long ely_as_int(ely_value v) {
@@ -553,43 +510,64 @@ static inline void* ely_as_ptr(ely_value v) {
 
 // ------------------------ Консоль ------------------------
 void ely_print(const char* str) { if (str) fputs(str, stdout); }
-void ely_print_int(ely_int n) { printf("%d", n); }
-void ely_print_uint(ely_uint n) { printf("%u", n); }
-void ely_print_more(ely_more n) { printf("%lld", n); }
-void ely_print_umore(ely_umore n) { printf("%llu", n); }
-void ely_print_flt(ely_flt f) { printf("%f", f); }
-void ely_print_double(ely_double d) { printf("%lf", d); }
-void ely_print_bool(ely_bool b) { fputs(b ? "true" : "false", stdout); }
-void ely_print_char(ely_char c) { putchar(c); }
-void ely_print_byte(ely_byte b) { printf("%d", (int)b); }
-void ely_print_ubyte(ely_ubyte b) { printf("%u", (unsigned int)b); }
 void ely_println(const char* str) {
     if (str) fputs(str, stdout);
     putchar('\n');
     fflush(stdout);
 }
-void ely_println_int(ely_int n) { printf("%d\n", n); fflush(stdout); }
-void ely_println_uint(ely_uint n) { printf("%u\n", n); fflush(stdout); }
-void ely_println_more(ely_more n) { printf("%lld\n", n); fflush(stdout); }
-void ely_println_umore(ely_umore n) { printf("%llu\n", n); fflush(stdout); }
-void ely_println_flt(ely_flt f) { printf("%f\n", f); fflush(stdout); }
-void ely_println_double(ely_double d) { printf("%lf\n", d); fflush(stdout); }
-void ely_println_bool(ely_bool b) { fputs(b ? "true" : "false", stdout); putchar('\n'); fflush(stdout); }
-void ely_println_char(ely_char c) { putchar(c); putchar('\n'); fflush(stdout); }
-void ely_println_byte(ely_byte b) { printf("%d\n", (int)b); fflush(stdout); }
-void ely_println_ubyte(ely_ubyte b) { printf("%u\n", (unsigned int)b); fflush(stdout); }
-void ely_println_str(const char* str) {
-    if (str) fputs(str, stdout);
+
+// Быстрый внутренний хелпер для печати ely_value строк без лишних аллокаций памяти
+static void ely_internal_print_str_value(ely_value str) {
+    if (ely_is_null(str)) return;
+    
+    if (ELY_IS_STR0(str)) {
+        char buf[16]; // Буфер для инлайн-строк
+        ely_unbox_inline_str(str, buf);
+        fputs(buf, stdout);
+    } else if (ELY_IS_PTR(str)) {
+        void* ptr = ELY_UNBOX_PTR(str);
+        if (ptr && get_heap_obj_type(ptr) == GC_OBJ_STRING) {
+            fputs((const char*)ptr, stdout);
+        }
+    }
+}
+
+// Исправленный вывод ely_value строк
+void ely_println_str(ely_value str) {
+    ely_internal_print_str_value(str);
     putchar('\n');
     fflush(stdout);
 }
+
+// Примитивы и числа (теперь строго с распаковкой)
+void ely_print_int(ely_value n)    { printf("%d", (int)ELY_UNBOX_INT(n)); }
+void ely_print_uint(ely_value n)   { printf("%u", (unsigned int)ELY_UNBOX_INT(n)); }
+void ely_print_more(ely_value n)   { printf("%lld", (long long)ELY_UNBOX_INT(n)); }
+void ely_print_umore(ely_value n)  { printf("%llu", (unsigned long long)ELY_UNBOX_INT(n)); }
+void ely_print_flt(ely_value f)    { printf("%f", (float)ely_unbox_double(f)); }
+void ely_print_double(ely_value d) { printf("%lf", ely_unbox_double(d)); }
+void ely_print_bool(ely_value b)   { fputs(ELY_UNBOX_BOOL(b) ? "true" : "false", stdout); }
+void ely_print_char(ely_value c)   { putchar((char)ELY_UNBOX_INT(c)); }
+void ely_print_byte(ely_value b)   { printf("%d", (int)(int8_t)ELY_UNBOX_INT(b)); }
+void ely_print_ubyte(ely_value b)  { printf("%u", (unsigned int)(uint8_t)ELY_UNBOX_INT(b)); }
+
+void ely_println_int(ely_value n)    { printf("%d\n", (int)ELY_UNBOX_INT(n)); fflush(stdout); }
+void ely_println_uint(ely_value n)   { printf("%u\n", (unsigned int)ELY_UNBOX_INT(n)); fflush(stdout); }
+void ely_println_more(ely_value n)   { printf("%lld\n", (long long)ELY_UNBOX_INT(n)); fflush(stdout); }
+void ely_println_umore(ely_value n)  { printf("%llu\n", (unsigned long long)ELY_UNBOX_INT(n)); fflush(stdout); }
+void ely_println_flt(ely_value f)    { printf("%f\n", (float)ely_unbox_double(f)); fflush(stdout); }
+void ely_println_double(ely_value d) { printf("%lf\n", ely_unbox_double(d)); fflush(stdout); }
+void ely_println_bool(ely_value b)   { fputs(ELY_UNBOX_BOOL(b) ? "true" : "false", stdout); putchar('\n'); fflush(stdout); }
+void ely_println_char(ely_value c)   { putchar((char)ELY_UNBOX_INT(c)); putchar('\n'); fflush(stdout); }
+void ely_println_byte(ely_value b)   { printf("%d\n", (int)(int8_t)ELY_UNBOX_INT(b)); fflush(stdout); }
+void ely_println_ubyte(ely_value b)  { printf("%u\n", (unsigned int)(uint8_t)ELY_UNBOX_INT(b)); fflush(stdout); }
 
 ely_str ely_input(void) {
     static char buffer[1024];
     if (fgets(buffer, sizeof(buffer), stdin)) {
         size_t len = strlen(buffer);
         if (len && buffer[len-1] == '\n') buffer[len-1] = '\0';
-        char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+        char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
         if (res) strcpy(res, buffer);
         return res;
     }
@@ -634,7 +612,7 @@ static ely_str _int_to_str(long long n) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%lld", n);
     if (len < 0) return NULL;
-    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
@@ -642,7 +620,7 @@ static ely_str _uint_to_str(unsigned long long n) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%llu", n);
     if (len < 0) return NULL;
-    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
@@ -654,7 +632,7 @@ ely_str ely_flt_to_str(ely_flt f) {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "%g", (double)f);
     if (len < 0) return NULL;
-    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
@@ -662,13 +640,13 @@ ely_str ely_double_to_str(ely_double d) {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "%g", d);
     if (len < 0) return NULL;
-    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (res) memcpy(res, buf, len + 1);
     return res;
 }
 ely_str ely_bool_to_str(ely_bool b) {
     const char* s = b ? "true" : "false";
-    char* res = gc_alloc(strlen(s) + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(strlen(s) + 1, GC_OBJ_STRING);
     if (res) strcpy(res, s);
     return res;
 }
@@ -682,7 +660,7 @@ ely_str ely_str_concat(const char* a, const char* b) {
     if (!a && !b) return NULL;
     size_t la = a ? strlen(a) : 0;
     size_t lb = b ? strlen(b) : 0;
-    char* res = gc_alloc(la + lb + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(la + lb + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     if (la) memcpy(res, a, la);
     if (lb) memcpy(res + la, b, lb);
@@ -700,7 +678,7 @@ ely_str ely_str_substr(const char* str, size_t start, size_t len) {
     size_t slen = strlen(str);
     if (start >= slen) return ely_str_dup("");
     if (start + len > slen) len = slen - start;
-    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     memcpy(res, str + start, len);
     res[len] = '\0';
@@ -711,7 +689,7 @@ ely_str ely_str_trim(const char* str) {
     while (*str && (*str == ' ' || *str == '\t' || *str == '\n')) str++;
     size_t len = strlen(str);
     while (len > 0 && (str[len-1] == ' ' || str[len-1] == '\t' || str[len-1] == '\n')) len--;
-    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     memcpy(res, str, len);
     res[len] = '\0';
@@ -727,12 +705,12 @@ ely_str ely_str_replace(const char* str, const char* old, const char* new_str) {
     while ((pos = strstr(pos, old))) { count++; pos += old_len; }
     if (count == 0) return ely_str_dup(str);
     size_t result_len = strlen(str) + count * (new_len - old_len);
-    char* res = gc_alloc(result_len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(result_len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     char* out = res;
     pos = str;
     while (*pos) {
-        char* found = strstr(pos, old);
+        char* found = (char*)strstr(pos, old);
         if (found) {
             size_t before = found - pos;
             memcpy(out, pos, before);
@@ -797,7 +775,7 @@ typedef struct ely_file {
 ely_file* ely_file_open(const char* path, const char* mode) {
     FILE* fp = fopen(path, mode);
     if (!fp) return NULL;
-    ely_file* f = gc_alloc(sizeof(ely_file), GC_OBJ_STRING);
+    ely_file* f = (ely_file*)gc_alloc(sizeof(ely_file), GC_OBJ_STRING);
     if (!f) { fclose(fp); return NULL; }
     f->fp = fp;
     return f;
@@ -821,7 +799,7 @@ char* ely_file_read(ely_file* f, size_t* out_len) {
         if (n == 0) break;
         if (total + n > cap) {
             cap = (total + n) * 2 + 1024;
-            char* new_res = realloc(result, cap);
+            char* new_res = (char*)realloc(result, cap);
             if (!new_res) { free(result); return NULL; }
             result = new_res;
         }
@@ -833,7 +811,7 @@ char* ely_file_read(ely_file* f, size_t* out_len) {
         free(result);
         return NULL;
     }
-    char* final = realloc(result, total + 1);
+    char* final = (char*)realloc(result, total + 1);
     if (final) result = final;
     result[total] = '\0';
     return result;
@@ -867,7 +845,7 @@ ely_str ely_path_join(const char* a, const char* b) {
     if (!b) return ely_str_dup(a);
     size_t la = strlen(a);
     size_t lb = strlen(b);
-    char* res = gc_alloc(la + lb + 2, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(la + lb + 2, GC_OBJ_STRING);
     if (!res) return NULL;
     strcpy(res, a);
     if (la > 0 && res[la-1] != '/' && res[la-1] != '\\')
@@ -877,19 +855,19 @@ ely_str ely_path_join(const char* a, const char* b) {
 }
 ely_str ely_path_basename(const char* path) {
     if (!path) return NULL;
-    char* sep = strrchr(path, '/');
-    if (!sep) sep = strrchr(path, '\\');
+    char* sep = (char*)strrchr(path, '/');
+    if (!sep) sep = (char*)strrchr(path, '\\');
     if (!sep) return ely_str_dup(path);
     return ely_str_dup(sep + 1);
 }
 ely_str ely_path_dirname(const char* path) {
     if (!path) return NULL;
-    char* sep = strrchr(path, '/');
-    if (!sep) sep = strrchr(path, '\\');
+    char* sep = (char*)strrchr(path, '/');
+    if (!sep) sep = (char*)strrchr(path, '\\');
     if (!sep) return ely_str_dup(".");
     size_t len = sep - path;
     if (len == 0) return ely_str_dup(".");
-    char* res = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* res = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (!res) return NULL;
     memcpy(res, path, len);
     res[len] = '\0';
@@ -923,7 +901,7 @@ void* ely_load_library(const char* path) {
 }
 void* ely_get_function(void* lib, const char* name) {
     if (!lib || !name) return NULL;
-    return LIB_GET(lib, name);
+    return (void*)LIB_GET(lib, name);
 }
 void ely_close_library(void* lib) {
     if (lib) LIB_CLOSE(lib);
@@ -956,7 +934,7 @@ char* ely_call_str_void(void* func) {
 static char* _jsonify_string(const char* s) {
     if (!s) return ely_str_dup("null");
     size_t len = strlen(s);
-    char* out = gc_alloc(len * 2 + 3, GC_OBJ_STRING);
+    char* out = (char*)gc_alloc(len * 2 + 3, GC_OBJ_STRING);
     char* p = out;
     *p++ = '"';
     for (size_t i = 0; i < len; i++) {
@@ -996,6 +974,64 @@ static char* array_to_json(arr* a) {
     return result;
 }
 
+unsigned int ely_dict_str_hash(ely_value val) {
+    char buf[64];
+    if ((val & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        ely_immediate_str_get_chars(val, buf);
+        return ely_str_hash(buf);
+    } else if (ELY_IS_PTR(val)) {
+        void* ptr = ELY_UNBOX_PTR(val);
+        if (ptr && get_heap_obj_type(ptr) == GC_OBJ_STRING) {
+            return ely_str_hash((const char*)ptr);
+        }
+    }
+    return 0;
+}
+
+int ely_dict_str_cmp(ely_value a, ely_value b) {
+    char buf_a[64] = {0};
+    char buf_b[64] = {0};
+    
+    if ((a & ELY_TAG_MASK) == ELY_TAG_STR0) ely_immediate_str_get_chars(a, buf_a);
+    else if (ELY_IS_PTR(a) && ELY_UNBOX_PTR(a)) strcpy(buf_a, (const char*)ELY_UNBOX_PTR(a));
+
+    if ((b & ELY_TAG_MASK) == ELY_TAG_STR0) ely_immediate_str_get_chars(b, buf_b);
+    else if (ELY_IS_PTR(b) && ELY_UNBOX_PTR(b)) strcpy(buf_b, (const char*)ELY_UNBOX_PTR(b));
+
+    return strcmp(buf_a, buf_b);
+}	
+#undef dict_new_str
+#define dict_new_str() dict_new(ely_dict_str_hash, ely_dict_str_cmp)
+
+arr* dict_keys(dict* d) {
+    arr* a = arr_new(); // Если есть возможность, используй пред-аллокацию на d->count элементов
+    if (!d) return a;
+    
+    for (size_t i = 0; i < d->capacity; i++) {
+        dict_entry* entry = d->buckets[i];
+        while (entry) {
+            arr_push(a, entry->key);
+            entry = entry->next; // Идем по цепочке коллизий
+        }
+    }
+    return a;
+}
+
+// Сбор всех значений словаря в один массив
+arr* dict_values(dict* d) {
+    arr* a = arr_new();
+    if (!d) return a;
+    
+    for (size_t i = 0; i < d->capacity; i++) {
+        dict_entry* entry = d->buckets[i];
+        while (entry) {
+            arr_push(a, entry->value);
+            entry = entry->next;
+        }
+    }
+    return a;
+}
+
 static char* dict_to_json(dict* d) {
     if (!d) return strdup("null");
     char* result = strdup("{");
@@ -1021,24 +1057,23 @@ static char* dict_to_json(dict* d) {
 #define ely_is_bool(v)   (((v) & 0xFFFF000000000000ULL) == ELY_TAG_BOOL)
 
 char* ely_value_to_string(ely_value v) {
-    char* buf = malloc(64);
+    char* buf = (char*)malloc(64);
     if (!buf) return NULL;
 
     if (ely_is_null(v)) {
-        return ely_str_dup("null");
+        free(buf);
+        return strdup("null");
     } else if (ely_is_bool(v)) {
-        int actual_bool = (int)(v & 1); 
-        return ely_bool_to_str(actual_bool);
+        free(buf);
+        return strdup(ELY_UNBOX_BOOL(v) ? "true" : "false"); // Используем макрос из хедера
     } else if (ely_is_int(v)) {
-        snprintf(buf, 64, "%lld", (long long)ely_unbox_int(v));
+        snprintf(buf, 64, "%lld", (long long)ELY_UNBOX_INT(v));
     } else if (ely_is_double(v)) {
         snprintf(buf, 64, "%g", ely_unbox_double(v));
-    } else if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
-        // Инлайновая строка Tier 0
+    } else if (ELY_IS_STR0(v)) {
         ely_unbox_inline_str(v, buf);
-    } else if (ely_is_ptr(v)) {
-        // Если это указатель — заглядываем в хедер объекта кучи
-        void* ptr = (void*)ely_unbox_ptr(v);
+    } else if (ELY_IS_PTR(v)) {
+        void* ptr = ELY_UNBOX_PTR(v);
         uint8_t type = get_heap_obj_type(ptr);
         
         if (type == GC_OBJ_STRING) {
@@ -1126,7 +1161,7 @@ static char* parse_string(json_parser* p) {
     size_t end = p->pos;
     consume(p, '"');
     size_t len = end - start;
-    char* buf = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* buf = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (!buf) return NULL;
     memcpy(buf, p->str + start, len);
     buf[len] = '\0';
@@ -1136,7 +1171,7 @@ static char* parse_number(json_parser* p) {
     const char* start = p->str + p->pos;
     while (p->pos < p->len && (isdigit(p->str[p->pos]) || p->str[p->pos] == '.' || p->str[p->pos] == '-' || p->str[p->pos] == 'e' || p->str[p->pos] == 'E')) p->pos++;
     size_t len = p->pos - (start - p->str);
-    char* buf = gc_alloc(len + 1, GC_OBJ_STRING);
+    char* buf = (char*)gc_alloc(len + 1, GC_OBJ_STRING);
     if (!buf) return NULL;
     memcpy(buf, start, len);
     buf[len] = '\0';
@@ -1181,7 +1216,7 @@ dict* ely_dictify(const char* json_str) {
         if (!consume(&parser, ':')) { dict_free(d); return NULL; }
         char* value = parse_value(&parser);
         if (!value) { dict_free(d); return NULL; }
-        ely_value* val = ely_value_new_string(value);
+        ely_value val = ely_value_new_string(value);
         dict_set_str(d, key, val);
         skip_whitespace(&parser);
         if (peek(&parser) == ',') consume(&parser, ',');
@@ -1233,7 +1268,7 @@ static dict* parse_object(json_parser* p) {
         if (!consume(p, ':')) { dict_free(d); return NULL; }
         char* value = parse_value(p);
         if (!value) { dict_free(d); return NULL; }
-        ely_value* val = ely_value_new_string(value);
+        ely_value val = ely_value_new_string(value);
         dict_set_str(d, key, val);
         skip_whitespace(p);
         if (peek(p) == ',') consume(p, ',');
@@ -1254,7 +1289,7 @@ static arr* parse_array(json_parser* p) {
         }
         char* value = parse_value(p);
         if (!value) { arr_free(a); return NULL; }
-        ely_value* val = ely_value_new_string(value);
+        ely_value val = ely_value_new_string(value);
         arr_push(a, val);
         skip_whitespace(p);
         if (peek(p) == ',') consume(p, ',');
@@ -1262,13 +1297,6 @@ static arr* parse_array(json_parser* p) {
         else { arr_free(a); return NULL; }
     }
     return a;
-}
-
-ely_value* ely_value_ne(ely_value* a, ely_value* b) {
-    ely_value* eq = ely_value_eq(a, b);
-    int bval = ely_value_as_bool(eq);
-    ely_value_free(eq);
-    return ely_value_new_bool(!bval);
 }
 
 // -------------------------------------------------------------------
@@ -1298,7 +1326,7 @@ ely_value keys(ely_value dict_val) {
 char* toJson(ely_value dict_val) {
     int t = ely_get_type(dict_val);
     if (t == ely_VALUE_OBJECT) {
-        return object_to_json((dict*)ELY_UNBOX_PTR(dict_val));
+        return dict_to_json((dict*)ELY_UNBOX_PTR(dict_val));
     } else if (t == ely_VALUE_ARRAY) {
         return array_to_json((arr*)ELY_UNBOX_PTR(dict_val));
     }
@@ -1367,7 +1395,7 @@ ely_bool isIn(ely_value value, arr* in) {
 }
 
 // ------------------------ Reflection ------------------------
-char* ely_typeof(ely_value v) {
+const char* ely_typeof(ely_value v) {
     switch (ely_get_type(v)) {
         case ely_VALUE_NULL:   return "null";
         case ely_VALUE_BOOL:   return "bool";
@@ -1590,49 +1618,53 @@ long long ely_time_now_ms(void) {
 #endif
 }
 
-ely_value* ely_format_time(ely_value* seconds_val, ely_value* fmt_val) {
+ely_value ely_format_time(ely_value seconds_val, ely_value fmt_val) {
     long long seconds = ely_value_as_int(seconds_val);
     char* fmt = ely_value_to_string(fmt_val);
-    if (!fmt) fmt = "%Y-%m-%d %H:%M:%S";
+    const char* actual_fmt = fmt ? fmt : "%Y-%m-%d %H:%M:%S";
 
     time_t t = (time_t)seconds;
     struct tm* tm_info = localtime(&t);
-    if (!tm_info) return ely_value_new_string("localtime error");
+    if (!tm_info) {
+        if (fmt) free(fmt);
+        return ely_value_new_string("localtime error");
+    }
 
-    // Замена пользовательских токенов на strftime‑совместимые
-    char* result = gc_alloc(1024, GC_OBJ_STRING);
-    if (!result) return ely_value_new_null();
+    // Перенос буфера на стек во избежание фрагментации памяти кучи
+    char result[1024];
     int ri = 0;
-    for (int i = 0; fmt[i] && ri < 1023; ) {
-        if (fmt[i] == 'Y' && fmt[i+1] == 'Y' && fmt[i+2] == 'Y' && fmt[i+3] == 'Y') {
+    for (int i = 0; actual_fmt[i] && ri < 1023; ) {
+        if (actual_fmt[i] == 'Y' && actual_fmt[i+1] == 'Y' && actual_fmt[i+2] == 'Y' && actual_fmt[i+3] == 'Y') {
             strftime(result + ri, 5, "%Y", tm_info);
             ri += strlen(result + ri);
             i += 4;
-        } else if (fmt[i] == 'M' && fmt[i+1] == 'M') {
+        } else if (actual_fmt[i] == 'M' && actual_fmt[i+1] == 'M') {
             strftime(result + ri, 3, "%m", tm_info);
             ri += strlen(result + ri);
             i += 2;
-        } else if (fmt[i] == 'D' && fmt[i+1] == 'D') {
+        } else if (actual_fmt[i] == 'D' && actual_fmt[i+1] == 'D') {
             strftime(result + ri, 3, "%d", tm_info);
             ri += strlen(result + ri);
             i += 2;
-        } else if (fmt[i] == 'h' && fmt[i+1] == 'h') {
+        } else if (actual_fmt[i] == 'h' && actual_fmt[i+1] == 'h') {
             strftime(result + ri, 3, "%H", tm_info);
             ri += strlen(result + ri);
             i += 2;
-        } else if (fmt[i] == 'm' && fmt[i+1] == 'm') {
+        } else if (actual_fmt[i] == 'm' && actual_fmt[i+1] == 'm') {
             strftime(result + ri, 3, "%M", tm_info);
             ri += strlen(result + ri);
             i += 2;
-        } else if (fmt[i] == 's' && fmt[i+1] == 's') {
+        } else if (actual_fmt[i] == 's' && actual_fmt[i+1] == 's') {
             strftime(result + ri, 3, "%S", tm_info);
             ri += strlen(result + ri);
             i += 2;
         } else {
-            result[ri++] = fmt[i++];
+            result[ri++] = actual_fmt[i++];
         }
     }
     result[ri] = '\0';
+    if (fmt) free(fmt);
+    
     return ely_value_new_string(result);
 }
 
@@ -1684,22 +1716,66 @@ char* ely_file_read_all_simple(const char* path) {
 }
 
 ely_value ely_to_int(ely_value v) {
-    return ely_value_new_int(ely_value_as_int(v));
+    if (ely_is_int(v)) return v;
+    
+    if (ely_is_double(v)) {
+        return ely_box_int((int64_t)ely_unbox_double(v));
+    }
+    
+    if (ely_is_bool(v)) {
+        return ely_box_int(ely_unbox_bool(v) ? 1 : 0);
+    }
+    
+    // Если это строка из кучи
+    if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
+        const char* str = (const char*)ely_unbox_ptr(v);
+        return ely_box_int((int64_t)strtoll(str, NULL, 10));
+    }
+    
+    // Если это инлайновая строка Tier 0 (реализация ниже в п.3)
+    if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        char buf[8];
+        ely_unbox_inline_str(v, buf);
+        return ely_box_int((int64_t)strtoll(buf, NULL, 10));
+    }
+    
+    return ely_box_int(0);
 }
 
 ely_value ely_to_double(ely_value v) {
-    return ely_value_new_double(ely_value_as_double(v));
-}
-
-ely_value ely_to_string(ely_value v) {
-    // Если ely_value_to_string возвращает char*, упаковываем его
-    return ely_value_new_string(ely_value_to_string(v)); 
+    if (ely_is_double(v)) return v;
+    
+    if (ely_is_int(v)) {
+        return ely_box_double((double)ely_unbox_int(v));
+    }
+    
+    if (ely_is_bool(v)) {
+        return ely_box_double(ely_unbox_bool(v) ? 1.0 : 0.0);
+    }
+    
+    if (ely_is_ptr(v) && get_heap_obj_type(ely_unbox_ptr(v)) == GC_OBJ_STRING) {
+        const char* str = (const char*)ely_unbox_ptr(v);
+        return ely_box_double(strtod(str, NULL));
+    }
+    
+    if ((v & ELY_TAG_MASK) == ELY_TAG_STR0) {
+        char buf[8];
+        ely_unbox_inline_str(v, buf);
+        return ely_box_double(strtod(buf, NULL));
+    }
+    
+    return ely_box_double(0.0);
 }
 
 ely_value ely_make_arr(ely_value elem) {
-    arr* a = arr_new();
-    arr_push(a, elem); // arr_push теперь принимает uint64_t по значению
-    return ely_value_new_array(a);
+    // Создаем внутреннюю структуру массива
+    arr* a = arr_new(); 
+    
+    // Пушим элемент (теперь elem — это не указатель, а само 64-битное значение)
+    arr_push(a, elem); 
+    
+    // Упаковываем указатель на массив в ely_value
+    return ely_box_ptr(a);
 }
 
 ely_value ely_dyn_arr(ely_value elem) {
@@ -1713,7 +1789,7 @@ void ely_chdir_to_exe_dir(void) {
     char exe_path[4096];
     DWORD len = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
     if (len > 0 && len < sizeof(exe_path)) {
-        char* last_slash = strrchr(exe_path, '\\');
+        char* last_slash = (char*)strrchr(exe_path, '\\');
         if (last_slash) {
             *last_slash = '\0';
             SetCurrentDirectoryA(exe_path);
@@ -1724,7 +1800,7 @@ void ely_chdir_to_exe_dir(void) {
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
     if (len > 0 && len < (ssize_t)sizeof(exe_path)) {
         exe_path[len] = '\0';
-        char* last_slash = strrchr(exe_path, '/');
+        char* last_slash = (char*)strrchr(exe_path, '/');
         if (last_slash) {
             *last_slash = '\0';
             chdir(exe_path);
