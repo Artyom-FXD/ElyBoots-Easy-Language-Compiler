@@ -66,24 +66,6 @@ def main():
     proj_parser.add_argument('name', nargs='?', default='new_project')
     proj_parser.add_argument('--type', dest='project_type', choices=['console', 'module', 'process'], default='console',
                              help='Project type: console, module, or process')
-    
-    # Новая команда install-compiler
-    install_parser = subparsers.add_parser('install-compiler', help='Manage GCC compiler installation')
-    install_subparsers = install_parser.add_subparsers(dest='install_command', help='Subcommands')
-
-    # ebt install-compiler install
-    install_cmd = install_subparsers.add_parser('install', help='Install GCC into tools/')
-    install_cmd.add_argument('--version', help='GCC version to install (e.g., 13.2.0)')
-
-    # ebt install-compiler remove
-    remove_cmd = install_subparsers.add_parser('remove', help='Remove installed GCC')
-
-    # ebt install-compiler list
-    list_cmd = install_subparsers.add_parser('list', help='List available GCC versions')
-
-    # ebt install-compiler set-path <path>
-    set_path_cmd = install_subparsers.add_parser('set-path', help='Set custom path to GCC executable')
-    set_path_cmd.add_argument('path', help='Path to GCC executable (e.g., /usr/bin/gcc-13)')
 
     config_parser = subparsers.add_parser('config', help='Manage compiler configuration')
     config_subparsers = config_parser.add_subparsers(dest='config_command', help='Config commands')
@@ -153,11 +135,14 @@ def build_command(args):
                             young_mb=args.young_mb,
                             old_mb=args.old_mb,
                             target=args.target)
-    builder.optimization = args.optimize
+    builder.optimization = args.optimize if args.optimize else 'hard'
     builder.debug = args.debug
     builder.force_rebuild = args.force
+    builder.mode = 'build'
     if args.target:
         builder.target = args.target
+    if args.output:
+        builder.output_name = args.output
     success = builder.build()
     if not success:
         return 1
@@ -176,19 +161,15 @@ def build_module_command(args):
 
 def run_command(args):
     from builder import ProjectBuilder
-    import subprocess
     project_path = _resolve_project_path(args.file)
     builder = ProjectBuilder(project_path)
-    builder.optimization = 'hard'
+    builder.optimization = 'soft'
     builder.debug = False
+    builder.mode = 'run'
+    
+    # SVLM сам всё скомпилировал и запустил внутри JIT, нам нужно только вернуть статус
     success = builder.build()
-    if not success:
-        return 1
-    exe = builder.output_name
-    if not exe or not os.path.isfile(exe):
-        print(f"Executable not found: {exe}")
-        return 1
-    return subprocess.call([exe] + args.args)
+    return 0 if success else 1
 
 def clean_command(args):
     build_dir = Path.cwd() / 'build'

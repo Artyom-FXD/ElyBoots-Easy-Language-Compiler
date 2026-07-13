@@ -94,11 +94,11 @@ void gc_init_cage(size_t custom_size_bytes) {
     g_cage_limit = g_cage_base + cage_size;
     cage_brk = (char*)g_cage_base;
 
-    printf("[ELYGC] GigaCage initialized. Base: 0x%llx, Limit: 0x%llx (%.2f GB reserved)\n",
-            (unsigned long long)g_cage_base,
-            (unsigned long long)g_cage_limit,
-            (double)(cage_size / (1024.0 * 1024.0 * 1024.0))
-    );
+    // // printf("[ELYGC] GigaCage initialized. Base: 0x%llx, Limit: 0x%llx (%.2f GB reserved)\n",
+    //         (unsigned long long)g_cage_base,
+    //         (unsigned long long)g_cage_limit,
+    //         (double)(cage_size / (1024.0 * 1024.0 * 1024.0))
+    // );
 }
 
 void* cage_alloc_segment(size_t size) {
@@ -203,69 +203,69 @@ static bool expand_old_heap(size_t additional_bytes);
  * @brief Эвакуирует объект из текущего полупространства молодого поколения.
  * Перемещает его либо в выжившее полупространство, либо продвигает в старое поколение.
  */
-static gc_header_t* gc_move_object(gc_header_t* old_hdr) {
-    if (!old_hdr) return NULL;
+// static gc_header_t* gc_move_object(gc_header_t* old_hdr) {
+//     if (!old_hdr) return NULL;
 
-    // 1. Проверяем, не был ли объект уже перемещен (защита от повторного копирования циклических ссылок)
-    if ((old_hdr->flags & GC_FLAG_MARKED) && old_hdr->u.forwarding != NULL) {
-        return old_hdr->u.forwarding;
-    }
+//     // 1. Проверяем, не был ли объект уже перемещен (защита от повторного копирования циклических ссылок)
+//     if ((old_hdr->flags & GC_FLAG_MARKED) && old_hdr->u.forwarding != NULL) {
+//         return old_hdr->u.forwarding;
+//     }
 
-    // 2. СТРАТЕГИЯ PROMOTION (Продвижение в старшее поколение)
-    // Если объект пережил достаточное количество сборок мусора, эвакуируем его в Old Gen
-    if (old_hdr->age >= PROMOTION_AGE) {
-        size_t body_size = old_hdr->size - HEADER_SIZE;
+//     // 2. СТРАТЕГИЯ PROMOTION (Продвижение в старшее поколение)
+//     // Если объект пережил достаточное количество сборок мусора, эвакуируем его в Old Gen
+//     if (old_hdr->age >= PROMOTION_AGE) {
+//         size_t body_size = old_hdr->size - HEADER_SIZE;
         
-        // Выделяем память в свободном списке или на вершине старого поколения
-        void* new_mem = allocate_old(body_size, (gc_obj_type_t)old_hdr->obj_type);
-        if (!new_mem) {
-            fprintf(stderr, "[ELYGC] FATAL: Promotion failed during gc_move_object (Old Gen Out of Memory)\n");
-            abort();
-        }
+//         // Выделяем память в свободном списке или на вершине старого поколения
+//         void* new_mem = allocate_old(body_size, (gc_obj_type_t)old_hdr->obj_type);
+//         if (!new_mem) {
+//             fprintf(stderr, "[ELYGC] FATAL: Promotion failed during gc_move_object (Old Gen Out of Memory)\n");
+//             abort();
+//         }
 
-        // Копируем только тело (полезную нагрузку), так как allocate_old сам инициализирует свежий заголовок
-        memcpy(new_mem, header_to_ptr(old_hdr), body_size);
+//         // Копируем только тело (полезную нагрузку), так как allocate_old сам инициализирует свежий заголовок
+//         memcpy(new_mem, header_to_ptr(old_hdr), body_size);
 
-        gc_header_t* new_hdr = ptr_to_header(new_mem);
-        new_hdr->flags |= GC_FLAG_IN_OLD;
-        new_hdr->age = 0; // Сбрасываем счетчик поколений для старой кучи
+//         gc_header_t* new_hdr = ptr_to_header(new_mem);
+//         new_hdr->flags |= GC_FLAG_IN_OLD;
+//         new_hdr->age = 0; // Сбрасываем счетчик поколений для старой кучи
 
-        // Оставляем адрес пересылки (Forwarding Pointer) в старом заголовке
-        old_hdr->flags |= GC_FLAG_MARKED;
-        old_hdr->u.forwarding = new_hdr;
+//         // Оставляем адрес пересылки (Forwarding Pointer) в старом заголовке
+//         old_hdr->flags |= GC_FLAG_MARKED;
+//         old_hdr->u.forwarding = new_hdr;
 
-        return new_hdr;
-    }
+//         return new_hdr;
+//     }
 
-    // 3. СТРАТЕГИЯ EVACUATION (Перенос в соседнее полупространство молодого поколения)
-    size_t total_size = ALIGN_UP(old_hdr->size, GC_ALIGNMENT);
+//     // 3. СТРАТЕГИЯ EVACUATION (Перенос в соседнее полупространство молодого поколения)
+//     size_t total_size = ALIGN_UP(old_hdr->size, GC_ALIGNMENT);
     
-    // Проверяем, влезет ли объект в текущий регион To-Space
-    if (young_top + total_size > young_limit) {
-        fprintf(stderr, "[ELYGC] FATAL: Young generation overflow during object evacuation!\n");
-        abort();
-    }
+//     // Проверяем, влезет ли объект в текущий регион To-Space
+//     if (young_top + total_size > young_limit) {
+//         fprintf(stderr, "[ELYGC] FATAL: Young generation overflow during object evacuation!\n");
+//         abort();
+//     }
 
-    // Аллоцируем память простым сдвигом указателя (Bump Allocation)
-    gc_header_t* new_hdr = (gc_header_t*)young_top;
-    young_top += total_size;
+//     // Аллоцируем память простым сдвигом указателя (Bump Allocation)
+//     gc_header_t* new_hdr = (gc_header_t*)young_top;
+//     young_top += total_size;
 
-    // Копируем объект целиком вместе с его текущим мета-заголовком
-    memcpy(new_hdr, old_hdr, old_hdr->size);
+//     // Копируем объект целиком вместе с его текущим мета-заголовком
+//     memcpy(new_hdr, old_hdr, old_hdr->size);
     
-    // Объект успешно пережил сборку в пределах Nursery, инкрементируем его возраст
-    new_hdr->age++;
+//     // Объект успешно пережил сборку в пределах Nursery, инкрементируем его возраст
+//     new_hdr->age++;
     
-    // На новом месте объект чист: сбрасываем маркеры перемещения
-    new_hdr->flags &= ~GC_FLAG_MARKED;
-    new_hdr->u.forwarding = NULL;
+//     // На новом месте объект чист: сбрасываем маркеры перемещения
+//     new_hdr->flags &= ~GC_FLAG_MARKED;
+//     new_hdr->u.forwarding = NULL;
 
-    // Записываем мост (Forwarding Pointer) в старый заголовок, чтобы все остальные ссылки на него обновились
-    old_hdr->flags |= GC_FLAG_MARKED;
-    old_hdr->u.forwarding = new_hdr;
+//     // Записываем мост (Forwarding Pointer) в старый заголовок, чтобы все остальные ссылки на него обновились
+//     old_hdr->flags |= GC_FLAG_MARKED;
+//     old_hdr->u.forwarding = new_hdr;
 
-    return new_hdr;
-}
+//     return new_hdr;
+// }
 
 /* ============================================================================
  * Низкоуровневое управление памятью ОС

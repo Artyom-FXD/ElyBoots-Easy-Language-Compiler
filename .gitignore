@@ -1,6 +1,9 @@
 ELP SOURCE CODE
 elp/
 
+# Spruce Developmet Kit etc.
+Spruce/
+
 # FXD
 ex_prj/
 myFolder/

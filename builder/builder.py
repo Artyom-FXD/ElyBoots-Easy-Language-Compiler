@@ -72,6 +72,30 @@ class ProjectBuilder:
         self.libs_dir = self.project_root / 'libs'
         self.compiler_runtime = _BASE_DIR / 'runtime'
         self.cache_path = self.build_dir / 'cache.json'
+        self.mode = 'build'
+
+    def _get_svlm_paths(self) -> Tuple[Optional[Path], Optional[Path]]:
+        """Ищет SVLM.exe строго в двух указанных местах относительно корня компилятора."""
+        # Вариант 1: /Spruce/svlm.exe
+        path_spruce = _BASE_DIR / 'Spruce' / 'SVLM.exe'
+        if path_spruce.is_file():
+            ssdk = path_spruce.parent / 'SSDK'
+            return path_spruce, (ssdk if ssdk.exists() else None)
+
+        # Вариант 2: /svlm.exe
+        path_root = _BASE_DIR / 'SVLM.exe'
+        if path_root.is_file():
+            ssdk = path_root.parent / 'SSDK'
+            return path_root, (ssdk if ssdk.exists() else None)
+
+        # Резервный флаг, если путь передали через аргументы CLI
+        if self.compiler_path:
+            p = Path(self.compiler_path)
+            if p.is_file() and p.name.lower() == 'svlm.exe':
+                ssdk = p.parent / 'SSDK'
+                return p, (ssdk if ssdk.exists() else None)
+
+        return None, None
 
     def _ensure_gpp(self, gcc_path: Path):
         gxx = gcc_path.with_name('g++.exe') if sys.platform == 'win32' else gcc_path.with_name('g++')
@@ -88,26 +112,13 @@ class ProjectBuilder:
         extra_flags = []
         if self.compiler_path:
             p = Path(self.compiler_path)
-            if p.exists():
+            if p.exists() and p.is_file() and p.name.lower() != 'svlm.exe':
                 return p.stem, str(p), extra_flags
-
-        for name in ['g++', 'gcc']:
-            path = shutil.which(name)
-            if path:
-                return name, path, extra_flags
-
-        search_roots = [
-            Path(r"D:\utils\mingw64\bin"),
-            Path(r"C:\mingw64\bin"),
-            Path(r"C:\msys64\mingw64\bin")
-        ]
-        for root in search_roots:
-            for exe in ['g++.exe', 'gcc.exe']:
-                p = root / exe
-                if p.exists():
-                    return ('g++' if 'g++' in exe else 'gcc'), str(p), extra_flags
-
-        return None, None, []
+        # Ищем стандартный системный GCC/G++ если нужно
+        for comp in ['g++', 'gcc', 'clang++', 'clang']:
+            if shutil.which(comp):
+                return comp, comp, extra_flags
+        return None, None, extra_flags
 
     def _compile_runtime(self, compiler: str, comp_path: str,
                          src: Path, obj: Path, defines=None) -> bool:
@@ -329,45 +340,51 @@ class ProjectBuilder:
             return False
 
         # --------------------------------------------------------------------
-        # ЭТАП 3. ЗАКОММЕНТИРОВАННЫЙ ВЫЗОВ СТОРОННЕГО КОМПИЛЯТОРА
+        # ЭТАП 3. ОРКЕСТРАЦИЯ ЧЕРЕЗ ДРАЙВЕР SVLM
         # --------------------------------------------------------------------
-        print(f"\n{TC.tag('SVLM')} External C++ compiler call bypassed. Ready for SVLM.exe orchestration.")
-        
-        # compiler_path, is_gxx = self._find_compiler()
-        # if not compiler_path:
-        #     return False
-        #
-        # runtime_dir = _BASE_DIR / 'runtime'
-        # rt_c = runtime_dir / 'ely_runtime.c'
-        # gc_c = runtime_dir / 'ely_gc.c'
-        #
-        # if not rt_c.exists() or not gc_c.exists():
-        #     print(f"{TC.tag('ERROR')} Runtime files not found in {runtime_dir}")
-        #     return False
-        #
-        # out_exe = self.project_root / ('app.exe' if os.name == 'nt' else 'app.out')
-        # cmd = [
-        #     compiler_path,
-        #     '-O3',
-        #     str(out_cpp_path),
-        #     str(rt_c),
-        #     str(gc_c),
-        #     '-I', str(runtime_dir),
-        #     '-o', str(out_exe)
-        # ]
-        # if is_gxx:
-        #     cmd.append('-std=c++17')
-        # if process_type == 'windows':
-        #     cmd.append('-mwindows')
-        #
-        # print(f"\n{TC.tag('COMPILER')} Compiling final binary...")
-        # print(f"  {TC.DIM}{' '.join(cmd)}{TC.RESET}")
-        #
-        # res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        # if res.returncode != 0:
-        #     print(f"\n{TC.tag('ERROR')} Compilation failed (exit code {res.returncode})")
-        #     self._show_compiler_error(res.stderr)
-        #     return False
+        svlm_bin, ssdk_dir = self._get_svlm_paths()
+        if not svlm_bin or not ssdk_dir:
+            print(f"\n{TC.tag('ERROR')} SVLM.exe or SSDK directory not found!")
+            return False
+
+        # Базовая команда для оркестратора
+        cmd = [
+            str(svlm_bin),
+            self.mode,                  # 'run' или 'build'
+            str(self.project_root),     # Путь к проекту
+            'elysources.txt',           # Список исходников
+            '--sdk', str(ssdk_dir)      # Путь к SSDK
+        ]
+
+        # Если мы собираем проект (AOT), нам ОХУЕННО нужно передать имя выходного файла в SVLM
+        if self.mode == 'build':
+            # 1. Проверяем, передал ли юзер кастомное имя через CLI (переменная на самом билдере)
+            out_name = getattr(self, 'output_name', None)
+            
+            # 2. Если через CLI ничего не передали, вытягиваем имя напрямую из распарсенного manager.json
+            if not out_name:
+                # В зависимости от того, как у тебя называется переменная конфига в билдере 
+                # (обычно self.config или self.manager_json), достаем значение по ключам:
+                cfg = getattr(self, 'config', {}) or getattr(self, 'manager_json', {})
+                out_name = cfg.get('output', {}).get('enter', {}).get('name', 'output.exe')
+            
+            # Передаем флаг -o в оркестратор, чтобы линкер LLD собрал всё с правильным именем
+            cmd.extend(['-o', str(out_name)])
+
+        print(f"\n{TC.tag('SVLM')} Launching core engine...")
+        print(f"  {TC.DIM}Command: {' '.join(cmd)}{TC.RESET}")
+
+        try:
+            res = subprocess.run(cmd, check=False)
+            if res.returncode != 0:
+                print(f"\n{TC.tag('ERROR')} SVLM backend exited with error code: {res.returncode}")
+                return False
+            
+            print(f"\n  {TC.GREEN}{TC.BOLD}SUCCESS: SVLM PROCESSING COMPLETED{TC.RESET}")
+            return True
+        except Exception as e:
+            print(f"\n{TC.tag('ERROR')} Failed to invoke SVLM binary: {e}")
+            return False
 
         print(f"\n  {TC.GREEN}{TC.BOLD}SUCCESS: FRONTEND ARTIFACTS GENERATED{TC.RESET}")
         print(f"  {TC.BOLD}{TC.WHITE}Project Build Dir:{TC.RESET} {self.build_dir}")
