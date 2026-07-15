@@ -140,6 +140,19 @@ void* cage_alloc_segment(size_t size) {
     return allocated;
 }
 
+#ifndef ELY_VALUES_ENUM_DEFINED
+#define ELY_VALUES_ENUM_DEFINED
+typedef enum ElyValuesEnum {
+    ely_VALUE_NULL,
+    ely_VALUE_BOOL,
+    ely_VALUE_INT,
+    ely_VALUE_DOUBLE,
+    ely_VALUE_STRING,
+    ely_VALUE_ARRAY,
+    ely_VALUE_OBJECT
+};
+#endif
+
 static void* cage_reserve_segment(size_t size) {
     if (g_cage_base == 0) {
         gc_init_cage(0);

@@ -11,8 +11,7 @@ inline int64_t Int(any val)    { return val.as_int(); }
 inline double Double(any val)  { return val.as_double(); }
 inline float Float(any val)    { return val.as_float(); }
 inline bool Bool(any val)      { return val.as_bool(); }
-inline std::string String(any val) { return val.as_string(); } // std::string[cite: 11]
-inline str Str(any val)        { return val.as_str(); }       // ely::str[cite: 13]
+inline str Str(any val)        { return val.as_str(); }
 
 // --- Universal static caster ---
 template <typename T>

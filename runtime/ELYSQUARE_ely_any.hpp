@@ -2,15 +2,14 @@
 
 #include "ely_dynamic.hpp"
 #include <iostream>
-#include <string>
-#include <stdexcept>
 #include <type_traits>
 
 namespace ely {
 
-// 1. Вперед-декларации (Forward declarations), чтобы разорвать круговую зависимость
 class array;
 class dict;
+class function;
+class str;
 
 class any {
 private:
@@ -37,7 +36,15 @@ public:
     any(double val) : raw_(ely_value_new_double(val)) {}
 
     any(const char* str) : raw_(ely_value_new_string(str)) {}
-    any(const std::string& str) : raw_(ely_value_new_string(str.c_str())) {}
+    
+    // Нативная поддержка нашей ely::str
+    any(const ely::str& s) noexcept;
+    
+    any(const function& fn) noexcept;
+    
+    // Поддержка коллекций
+    any(const ely::array& arr) noexcept;
+    any(const ely::dict& d) noexcept;
 
     constexpr ely_value raw() const noexcept { return raw_; }
 
@@ -72,55 +79,32 @@ public:
         return obj && static_cast<uint8_t>(obj->type) == ELY_HEAP_DICT;
     }
 
+    bool is_function() const noexcept {
+        if (!is_ptr()) return false;
+        auto* obj = static_cast<ElyHeapObject*>(ely_unbox_ptr(raw_));
+        return obj && static_cast<uint8_t>(obj->type) == ELY_HEAP_FUNCTION;
+    }
+
     bool is_string() const noexcept { return is_inline_string() || is_heap_string(); }
     bool is_number() const noexcept { return is_int() || is_float() || is_heap_double(); }
 
-    int64_t as_int() const {
-        if (is_int()) return ely_unbox_int(raw_);
-        if (is_heap_double()) return static_cast<int64_t>(static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value);
-        if (is_float()) return static_cast<int64_t>(ely_unbox_float(raw_));
-        throw std::bad_cast();
-    }
-
-    float as_float() const {
-        if (is_float()) return ely_unbox_float(raw_);
-        if (is_int()) return static_cast<float>(ely_unbox_int(raw_));
-        if (is_heap_double()) return static_cast<float>(static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value);
-        throw std::bad_cast();
-    }
-
-    double as_double() const {
-        if (is_heap_double()) return static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value;
-        if (is_int()) return static_cast<double>(ely_unbox_int(raw_));
-        if (is_float()) return static_cast<double>(ely_unbox_float(raw_));
-        throw std::bad_cast();
-    }
-
-    bool as_bool() const {
-        if (!is_bool()) throw std::bad_cast();
-        return raw_ == ELY_VAL_TRUE;
-    }
+    int64_t as_int() const;
+    float as_float() const;
+    double as_double() const;
+    bool as_bool() const;
 
     ely::array as_array() const;
     ely::dict as_dict() const;
+    ely::function as_function() const;
 
-    const char* c_str() const {
-        if (!is_string()) throw std::bad_cast();
-        return ely_value_to_string(raw_);
-    }
-
-    // @brief Returns a C++ string representation of the value
-    // @warning IT'S NOT THE SAME AS `as_str`
-    std::string as_string() const { return std::string(c_str()); }
-    // @brief Returns a ELY string representation of the value.
-    // @warning IT'S NOT THE SAME AS `as_string`
-    str as_str() const { return str(c_str()); }
+    const char* c_str() const;
+    str as_str() const;
 
     explicit operator int64_t() const { return as_int(); }
     explicit operator float() const   { return as_float(); }
     explicit operator double() const  { return as_double(); }
-    explicit operator std::string() const { return as_string(); }
-    explicit operator str() const { return as_str(); }
+    explicit operator str() const;
+    explicit operator ely::function() const; 
 
     explicit operator bool() const {
         return raw_ != ELY_VAL_FALSE && raw_ != ELY_VAL_NULL;
@@ -158,6 +142,9 @@ public:
             os << val.as_double();
         } else if (val.is_string()) {
             os << val.c_str();
+        } else if (val.is_function()) {
+            auto* fn = reinterpret_cast<ElyHeapFunction*>(ely_unbox_ptr(val.raw_));
+            os << "<function '" << (fn->name ? fn->name : "<anonymous>") << "'>";
         } else if (val.is_ptr()) {
             os << "Ptr(" << ely_unbox_ptr(val.raw_) << ")";
         } else {
@@ -169,5 +156,60 @@ public:
 
 } // namespace ely
 
-// КРИТИЧЕСКИЙ СДВИГ: Включаем коллекции только тогда, когда класс any полностью известен компилятору!
+#include "ELYSQUARE_ely_str.hpp"
 #include "ELYSQUARE_ely_collections.hpp"
+#include "ELYSQUARE_ely_function.hpp"
+#include "ELYSQUARE_ely_errors.hpp"
+
+namespace ely {
+
+// Реализация конструкторов после того, как типы стали полными
+inline any::any(const ely::str& s) noexcept : raw_(s.raw_value()) {}
+inline any::any(const function& fn) noexcept : raw_(fn.raw()) {}
+inline any::any(const ely::array& arr) noexcept : raw_(arr.raw()) {}
+inline any::any(const ely::dict& d) noexcept : raw_(d.raw()) {}
+
+inline int64_t any::as_int() const {
+    if (is_int()) return ely_unbox_int(raw_);
+    if (is_heap_double()) return static_cast<int64_t>(static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value);
+    if (is_float()) return static_cast<int64_t>(ely_unbox_float(raw_));
+    throw ErrorException(ErrorType::TypeError, "TypeError: Cannot cast value to Integer");
+}
+
+inline float any::as_float() const {
+    if (is_float()) return ely_unbox_float(raw_);
+    if (is_int()) return static_cast<float>(ely_unbox_int(raw_));
+    if (is_heap_double()) return static_cast<float>(static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value);
+    throw ErrorException(ErrorType::TypeError, "TypeError: Cannot cast value to Float");
+}
+
+inline double any::as_double() const {
+    if (is_heap_double()) return static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value;
+    if (is_int()) return static_cast<double>(ely_unbox_int(raw_));
+    if (is_float()) return static_cast<double>(ely_unbox_float(raw_));
+    throw ErrorException(ErrorType::TypeError, "TypeError: Cannot cast value to Double");
+}
+
+inline bool any::as_bool() const {
+    if (!is_bool()) throw ErrorException(ErrorType::TypeError, "TypeError: Value is not a Boolean");
+    return raw_ == ELY_VAL_TRUE;
+}
+
+inline const char* any::c_str() const {
+    if (!is_string()) throw ErrorException(ErrorType::TypeError, "TypeError: Value is not a String");
+    return ely_value_to_string(raw_);
+}
+
+inline str any::as_str() const {
+    return str(c_str());
+}
+
+inline any::operator str() const {
+    return as_str();
+}
+
+inline any::operator ely::function() const {
+    return as_function();
+}
+
+} // namespace ely

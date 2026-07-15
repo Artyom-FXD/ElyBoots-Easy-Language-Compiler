@@ -34,6 +34,7 @@ typedef uint64_t ely_value;
 #define ELY_HEAP_DOUBLE     1
 #define ELY_HEAP_ARRAY      2
 #define ELY_HEAP_DICT       3
+#define ELY_HEAP_FUNCTION   4
 
 typedef struct ElyHeapObject {
     uint8_t type; // Определяет, кто лежит по адресу: String, Double, Array или Dict
@@ -49,6 +50,13 @@ typedef struct ElyHeapDouble {
     ElyHeapObject base;
     double value;
 } ElyHeapDouble;
+
+typedef struct {
+    ElyHeapObject base;
+    void* func_ptr;
+    const char* name;
+    int arity;   
+} ElyHeapFunction;
 
 // Базовые проверки типов
 static inline bool ely_is_ptr(ely_value v) { return (v & ELY_TAG_MASK) == ELY_TAG_PTR; }
