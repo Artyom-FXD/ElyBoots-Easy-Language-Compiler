@@ -5,13 +5,12 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include "ely_gc.h"
+#include "ely_value.h"
 
-// Тип ely_value (uint64_t) должен приходить из базового рантайма до инклюда коллекции.
-typedef uint64_t ely_value; 
-
-// ------------------------ arr (динамический массив ely_value) ------------------------
+// ------------------------ arr (Динамический массив) ------------------------
 typedef struct arr {
-    ely_value* data;      // БЫЛО: ely_value** data (теперь плоский массив uint64_t элементов)
+    ElyHeapObject base;   // ТЕПЕРЬ ПОД КОНТРОЛЕМ: Смещение +0 содержит тип ELY_HEAP_ARRAY
+    ely_value* data;      
     size_t size;
     size_t capacity;
 } arr;
@@ -32,17 +31,18 @@ arr* arr_make(size_t count, ...);
 
 // ------------------------ dict (хеш-таблица ely_value) ------------------------
 typedef struct dict_entry {
-    ely_value key;        // БЫЛО: ely_value* key
-    ely_value value;      // БЫЛО: ely_value* value
+    ely_value key;        
+    ely_value value;      
     struct dict_entry* next;
 } dict_entry;
 
 typedef struct dict {
+    ElyHeapObject base;   // ТЕПЕРЬ ПОД КОНТРОЛЕМ: Смещение +0 содержит тип ELY_HEAP_DICT
     dict_entry** buckets;
     size_t size;
     size_t capacity;
-    unsigned int (*hash)(ely_value key);         // БЫЛО: ely_value* key
-    int (*key_cmp)(ely_value a, ely_value b);    // БЫЛО: ely_value* a, ely_value* b
+    unsigned int (*hash)(ely_value key);         
+    int (*key_cmp)(ely_value a, ely_value b);    
 } dict;
 
 dict* dict_new(unsigned int (*hash)(ely_value), int (*key_cmp)(ely_value, ely_value));
@@ -51,5 +51,8 @@ ely_value dict_get(dict* d, ely_value key);             // БЫЛО: указа�
 int dict_has(dict* d, ely_value key);
 int dict_delete(dict* d, ely_value key);
 size_t dict_size(dict* d);
+
+unsigned int dict_hash_str(ely_value key);
+int dict_cmp_str(ely_value a, ely_value b);
 
 #endif // COLLECTIONS_H

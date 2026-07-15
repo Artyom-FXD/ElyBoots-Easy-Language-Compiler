@@ -10,13 +10,14 @@
 #include <stdint.h>
 #include <stdalign.h>
 #include <string.h>
-#include "ely_runtime.h"
+#include "ely_value.h"
+#include "collections.h"
 
 #if defined(_WIN32) || defined(_WIN64)
-    #include <windows.h>
+#include <windows.h>
 #else
-    #include <sys/mman.h>
-    #include <unistd.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 /* ============================================================================
@@ -33,6 +34,10 @@ static inline gc_header_t* ptr_to_header(void* ptr) {
 static inline void* header_to_ptr(gc_header_t* hdr) {
     return (char*)hdr + HEADER_SIZE;
 }
+
+#ifndef ELY_PAYLOAD_MASK
+#define ELY_PAYLOAD_MASK (~0x7ULL) 
+#endif
 
 /* ============================================================================
  * Глобальное состояние сборщика
@@ -133,6 +138,36 @@ void* cage_alloc_segment(size_t size) {
 
     cage_brk += aligned_size;
     return allocated;
+}
+
+static void* cage_reserve_segment(size_t size) {
+    if (g_cage_base == 0) {
+        gc_init_cage(0);
+    }
+
+    size_t page_size = 4096;
+    size_t aligned_size = (size + page_size - 1) & ~(page_size - 1);
+
+    if (cage_brk + aligned_size > (char*)g_cage_limit) {
+        fprintf(stderr, "[ELYGC] FATAL ERROR: GigaCage out of address space during segment reservation!\n");
+        abort();
+    }
+
+    void* allocated = (void*)cage_brk;
+    cage_brk += aligned_size;
+    return allocated;
+}
+
+static bool cage_commit_segment(void* ptr, size_t size) {
+    if (!ptr) return false;
+    size_t page_size = 4096;
+    size_t aligned_size = (size + page_size - 1) & ~(page_size - 1);
+
+#ifdef _WIN32
+    return VirtualAlloc(ptr, aligned_size, MEM_COMMIT, PAGE_READWRITE) != NULL;
+#else
+    return mprotect(ptr, aligned_size, PROT_READ | PROT_WRITE) == 0;
+#endif
 }
 
 /**
@@ -503,8 +538,9 @@ static void* copy_object(void* obj_ptr) {
     return header_to_ptr(new_hdr);
 }
 
+// Очищаем младшие биты указателя и накладываем тег поверх них в самый низ
 #define ELY_REPACK_PTR(target_slot, raw_ptr, type_tag) \
-    (target_slot) = (((uint64_t)(type_tag) << 56) | ((uint64_t)(raw_ptr) & ELY_PAYLOAD_MASK))
+    (target_slot) = (((uint64_t)(raw_ptr) & ELY_PAYLOAD_MASK) | ((uint64_t)(type_tag) & 0x7))
 
 static void scan_object_fields(void* obj_ptr) {
     gc_header_t* hdr = ptr_to_header(obj_ptr);
@@ -575,13 +611,21 @@ static void collect_young(void) {
 
     for (size_t i = 0; i < roots_count; i++) {
         if (*roots[i] && ELY_IS_PTR(*roots[i])) {
-			*roots[i] = (uint64_t)copy_object(ELY_UNBOX_PTR(*roots[i]));
-		}
+            uint64_t val = *roots[i];
+            int t = ely_get_type(val);
+            void* old_ptr = ELY_UNBOX_PTR(val);
+            void* new_ptr = copy_object(old_ptr);
+            ELY_REPACK_PTR(*roots[i], new_ptr, t); // Сохраняем тип в верхних битах!
+        }
     }
     for (size_t i = 0; i < global_roots_count; i++) {
-		if (*global_roots[i] && ELY_IS_PTR(*global_roots[i])) {
-			*global_roots[i] = (uint64_t)copy_object(ELY_UNBOX_PTR(*global_roots[i]));
-		}
+        if (*global_roots[i] && ELY_IS_PTR(*global_roots[i])) {
+            uint64_t val = *global_roots[i];
+            int t = ely_get_type(val);
+            void* old_ptr = ELY_UNBOX_PTR(val);
+            void* new_ptr = copy_object(old_ptr);
+            ELY_REPACK_PTR(*global_roots[i], new_ptr, t); // Сохраняем тип!
+        }
     }
 
     for (size_t i = 0; i < dirty_count; i++) {
@@ -601,12 +645,79 @@ static void collect_young(void) {
 }
 
 /* ============================================================================
+ * Безопасное обновление указателей для уплотнения Old Gen
+ * ============================================================================ */
+
+static void adjust_ptr(uint64_t* slot) {
+    if (*slot && ELY_IS_PTR(*slot)) {
+        void* raw = ELY_UNBOX_PTR(*slot);
+        if (is_in_old_generation(raw)) {
+            gc_header_t* hdr = ptr_to_header(raw);
+            // Если объект живой и у него есть адрес пересылки
+            if (hdr->flags & GC_FLAG_MARKED) {
+                int t = ely_get_type(*slot);
+                void* new_ptr = header_to_ptr(hdr->u.forwarding);
+                ELY_REPACK_PTR(*slot, new_ptr, t);
+            }
+        }
+    }
+}
+
+static void adjust_raw_ptr(void** ptr_slot) {
+    if (*ptr_slot && is_in_old_generation(*ptr_slot)) {
+        gc_header_t* hdr = ptr_to_header(*ptr_slot);
+        if (hdr->flags & GC_FLAG_MARKED) {
+            *ptr_slot = header_to_ptr(hdr->u.forwarding);
+        }
+    }
+}
+
+static void update_object_pointers(void* obj_ptr) {
+    gc_header_t* hdr = ptr_to_header(obj_ptr);
+    switch (hdr->obj_type) {
+        case GC_OBJ_VALUE: {
+            ely_value* v = (ely_value*)obj_ptr;
+            adjust_ptr(v);
+            break;
+        }
+        case GC_OBJ_ARR: {
+            arr* a = (arr*)obj_ptr;
+            for (size_t i = 0; i < a->size; i++) {
+                adjust_ptr(&a->data[i]);
+            }
+            break;
+        }
+        case GC_OBJ_DICT: {
+            dict* d = (dict*)obj_ptr;
+            // buckets — это сырой массив указателей, выделенный в GC-куче
+            adjust_raw_ptr((void**)&d->buckets);
+            if (d->buckets) {
+                for (size_t i = 0; i < d->capacity; i++) {
+                    adjust_raw_ptr((void**)&d->buckets[i]);
+                    dict_entry* e = d->buckets[i];
+                    while (e) {
+                        adjust_ptr(&e->key);
+                        adjust_ptr(&e->value);
+                        adjust_raw_ptr((void**)&e->next);
+                        e = e->next;
+                    }
+                }
+            }
+            break;
+        }
+        default: break;
+    }
+}
+
+/* ============================================================================
  * Сборка старого поколения (mark‑sweep)
  * ============================================================================ */
 
 static void mark_object(void* obj_ptr) {
     if (!obj_ptr) return;
-    if (!is_gc_managed(obj_ptr)) {
+    
+    // ИСПРАВЛЕНО: Маркируем только то, что реально находится под управлением GC!
+    if (is_gc_managed(obj_ptr)) {
         gc_header_t* hdr = ptr_to_header(obj_ptr);
         if (hdr->flags & GC_FLAG_MARKED) return;
         hdr->flags |= GC_FLAG_MARKED;
@@ -634,19 +745,21 @@ static void mark_object(void* obj_ptr) {
             case GC_OBJ_DICT: {
                 dict* d = (dict*)obj_ptr;
                 mark_object(d->buckets);
-                for (size_t i = 0; i < d->capacity; i++) {
-                    dict_entry* e = d->buckets[i];
-                    while (e) {
-                        mark_object(e); // Маркируем саму ноду списка коллизий
-                        int kt = ely_get_type(e->key);
-                        if (kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == ely_VALUE_STRING) {
-                            mark_object(ELY_UNBOX_PTR(e->key));
+                if (d->buckets) {
+                    for (size_t i = 0; i < d->capacity; i++) {
+                        dict_entry* e = d->buckets[i];
+                        while (e) {
+                            mark_object(e); 
+                            int kt = ely_get_type(e->key);
+                            if (kt == ely_VALUE_ARRAY || kt == ely_VALUE_OBJECT || kt == ely_VALUE_STRING) {
+                                mark_object(ELY_UNBOX_PTR(e->key));
+                            }
+                            int vt = ely_get_type(e->value);
+                            if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == ely_VALUE_STRING) {
+                                mark_object(ELY_UNBOX_PTR(e->value));
+                            }
+                            e = e->next;
                         }
-                        int vt = ely_get_type(e->value);
-                        if (vt == ely_VALUE_ARRAY || vt == ely_VALUE_OBJECT || vt == ely_VALUE_STRING) {
-                            mark_object(ELY_UNBOX_PTR(e->value));
-                        }
-                        e = e->next;
                     }
                 }
                 break;
@@ -691,7 +804,7 @@ static void compact_old(void) {
     char* scan = old_start;
     char* dest = old_start;
 
-    // Первый проход: вычисляем новые адреса и сохраняем их в forwarding
+    // Пасс 1: Вычисляем новые адреса (Forwarding Addresses) для всех живых блоков
     while (scan < old_top) {
         gc_header_t* hdr = (gc_header_t*)scan;
         size_t size = ALIGN_UP(hdr->size, GC_ALIGNMENT);
@@ -702,7 +815,39 @@ static void compact_old(void) {
         scan += size;
     }
 
-    // Второй проход: перемещаем объекты и обновляем внутренние ссылки
+    // Пасс 2: Обновляем абсолютно все указатели в системе на новые адреса
+
+    // 2.1. Локальные корни
+    for (size_t i = 0; i < roots_count; i++) {
+        adjust_ptr(roots[i]);
+    }
+    // 2.2. Глобальные корни
+    for (size_t i = 0; i < global_roots_count; i++) {
+        adjust_ptr(global_roots[i]);
+    }
+    // 2.3. Dirty-set
+    for (size_t i = 0; i < dirty_count; i++) {
+        adjust_raw_ptr((void**)&dirty_set[i]);
+    }
+    // 2.4. Указатели внутри Молодого Поколения (они могут вести на уплотняемый Old Gen!)
+    scan = young_from;
+    while (scan < young_top) {
+        gc_header_t* hdr = (gc_header_t*)scan;
+        update_object_pointers(header_to_ptr(hdr));
+        scan += ALIGN_UP(hdr->size, GC_ALIGNMENT);
+    }
+    // 2.5. Указатели внутри самого Старого Поколения (пока объекты на старых местах)
+    scan = old_start;
+    while (scan < old_top) {
+        gc_header_t* hdr = (gc_header_t*)scan;
+        size_t size = ALIGN_UP(hdr->size, GC_ALIGNMENT);
+        if (hdr->flags & GC_FLAG_MARKED) {
+            update_object_pointers(header_to_ptr(hdr));
+        }
+        scan += size;
+    }
+
+    // Пасс 3: Физическое перемещение выживших объектов на их новые места
     scan = old_start;
     while (scan < old_top) {
         gc_header_t* hdr = (gc_header_t*)scan;
@@ -712,47 +857,15 @@ static void compact_old(void) {
             if ((char*)new_hdr != scan) {
                 memmove(new_hdr, hdr, hdr->size);
             }
-            // Обновляем ссылки внутри объекта
-            update_references(header_to_ptr(new_hdr), (char*)new_hdr - scan);
-            scan += size;
-        } else {
-            scan += size;
         }
+        scan += size;
     }
 
-    // Обновляем корни
-    for (size_t i = 0; i < roots_count; i++) {
-        void** root = (void**)roots[i];
-        if (*root && is_in_old_generation(*root)) {
-            gc_header_t* hdr = ptr_to_header(*root);
-            if (hdr->flags & GC_FLAG_MARKED) {
-                *root = header_to_ptr(hdr->u.forwarding);
-            }
-        }
-    }
-    for (size_t i = 0; i < global_roots_count; i++) {
-        void** root = (void**)global_roots[i];
-        if (*root && is_in_old_generation(*root)) {
-            gc_header_t* hdr = ptr_to_header(*root);
-            if (hdr->flags & GC_FLAG_MARKED) {
-                *root = header_to_ptr(hdr->u.forwarding);
-            }
-        }
-    }
-
-    // Обновляем dirty‑set
-    for (size_t i = 0; i < dirty_count; i++) {
-        gc_header_t* hdr = dirty_set[i];
-        if (hdr->flags & GC_FLAG_MARKED) {
-            dirty_set[i] = hdr->u.forwarding;
-        }
-    }
-
-    // Устанавливаем новую вершину кучи и сбрасываем free‑list
+    // Корректируем вершину старого поколения и сбрасываем свободный список
     old_top = dest;
     old_free_list = NULL;
 
-    // Сбрасываем флаг MARKED у всех живых объектов
+    // Сбрасываем флаги маркировки у всех выживших
     scan = old_start;
     while (scan < old_top) {
         gc_header_t* hdr = (gc_header_t*)scan;
@@ -818,22 +931,23 @@ static bool is_in_old_generation(void* ptr) {
 }
 
 static bool expand_old_heap(size_t additional_bytes) {
-    if (OLD_MAX_SIZE > 0 && old_size + additional_bytes > OLD_MAX_SIZE) return false;
-    size_t new_size = old_size + additional_bytes;
-    char* new_start = (char*)os_resize(old_start, old_size, new_size);
-    if (!new_start) return false;
-
-    ptrdiff_t delta = new_start - old_start;
-    if (delta != 0) {
-        old_start = new_start;
-        old_top += delta;
-        old_limit = old_start + new_size;
-        old_free_list = NULL;
-        // Обновление корней и dirty-сета для простоты не делаем, т.к. при следующей сборке всё синхронизируется
-    } else {
-        old_limit = old_start + new_size;
+    size_t old_virtual_max = (OLD_MAX_SIZE > 0) ? OLD_MAX_SIZE : (2ULL * 1024ULL * 1024ULL * 1024ULL);
+    if (old_size + additional_bytes > old_virtual_max) {
+        fprintf(stderr, "[ELYGC] WARNING: Old generation reached maximum virtual size limit!\n");
+        return false; 
     }
-    old_size = new_size;
+
+    size_t page_size = 4096;
+    size_t aligned_additional = (additional_bytes + page_size - 1) & ~(page_size - 1);
+
+    // Коммитим новые физические страницы прямо за текущим лимитом старости
+    if (!cage_commit_segment(old_limit, aligned_additional)) {
+        fprintf(stderr, "[ELYGC] ERROR: Failed to commit expanded space for old generation\n");
+        return false;
+    }
+
+    old_size += aligned_additional;
+    old_limit = old_start + old_size;
     return true;
 }
 
@@ -949,18 +1063,25 @@ void gc_init(void) {
     young_top = young_from;
     young_limit = young_from + YOUNG_SIZE;
 
-    // Выделяем начальный регион под Старое Поколение внутри Клетки
-    old_size = OLD_INITIAL_SIZE;
-    old_start = (char*)cage_alloc_segment(old_size);
+    // ИСПРАВЛЕНИЕ БАГА 3: Резервируем виртуальный диапазон под Старое Поколение (например, 2 ГБ)
+    size_t old_virtual_max = (OLD_MAX_SIZE > 0) ? OLD_MAX_SIZE : (2ULL * 1024ULL * 1024ULL * 1024ULL);
+    old_start = (char*)cage_reserve_segment(old_virtual_max);
     if (!old_start) { 
-        fprintf(stderr, "GC: failed to allocate old generation within GigaCage\n"); 
+        fprintf(stderr, "GC: failed to reserve virtual space for old generation within GigaCage\n"); 
         abort(); 
     }
     
+    // Физически коммитим только начальный размер (8 МБ)
+    old_size = OLD_INITIAL_SIZE;
+    if (!cage_commit_segment(old_start, old_size)) {
+        fprintf(stderr, "GC: failed to commit initial old generation within GigaCage\n"); 
+        abort(); 
+    }
+
     old_top = old_start;
     old_limit = old_start + old_size;
 
-    // Инициализация остального состояния (без изменений)
+    // Инициализация остального состояния
     old_free_list = NULL;
     large_objects = NULL;
     roots = NULL;
@@ -1146,7 +1267,7 @@ static bool is_in_young_generation(void* ptr) {
     return (addr >= young_from && addr < young_from + 2 * YOUNG_SIZE);
 }
 
-static bool is_gc_managed(void* ptr) {
+bool is_gc_managed(void* ptr) {
     if (!ptr) return false;
     char* addr = (char*)ptr;
     // Проверяем молодое поколение (оба полупространства)
@@ -1195,7 +1316,7 @@ void gc_trace_value(ely_value* slot) {
 void gc_trace_roots(void) {
     // Обходим локальные корни (стековые переменные)
     for (size_t i = 0; i < roots_count; i++) {
-        gc_trace_value(roots[i]); // roots[i] имеет тип ely_value*
+        gc_trace_value(roots[i]);
     }
 
     // Обходим глобальные переменные
@@ -1205,37 +1326,64 @@ void gc_trace_roots(void) {
 }
 
 void gc_scan_object(gc_header_t* hdr) {
-    // Внимание: используем только уникальные имена типов объектов GC из твоего енама!
     switch (hdr->obj_type) {
-        
-        case GC_OBJ_ARR: { // Синхронизировано с scan_object_fields
+        case GC_OBJ_ARR: {
             arr* a = (arr*)header_to_ptr(hdr);
-            // Каждый элемент a->data[i] — это теперь ely_value (uint64_t)
-            // Передаем адрес ячейки (&a->data[i]), чтобы gc_trace_value обновил указатель внутри боксированного числа
+            
+            // 1. Если буфер данных переместился, обновляем указатель на него
+            if (a->data) {
+                gc_header_t* data_hdr = ptr_to_header(a->data);
+                gc_header_t* new_data_hdr = gc_move_object(data_hdr);
+                a->data = (ely_value*)header_to_ptr(new_data_hdr);
+            }
+            
+            // 2. Трассируем все живые элементы внутри массива
             for (size_t i = 0; i < a->size; i++) {
                 gc_trace_value(&a->data[i]); 
             }
             break;
         }
-
-        case GC_OBJ_DICT: { // Переписано под структуру buckets с коллизиями
+        
+        case GC_OBJ_DICT: {
             dict* d = (dict*)header_to_ptr(hdr);
+            
+            // 1. Обновляем указатель на массив бакетов при перемещении
+            if (d->buckets) {
+                gc_header_t* b_hdr = ptr_to_header(d->buckets);
+                gc_header_t* new_b_hdr = gc_move_object(b_hdr);
+                d->buckets = (dict_entry**)header_to_ptr(new_b_hdr);
+            }
+            
+            // 2. Проходим по всем бакетам и глубоко копируем/трассируем ноды коллизий
             for (size_t i = 0; i < d->capacity; i++) {
                 dict_entry* e = d->buckets[i];
+                dict_entry* prev = NULL;
                 while (e) {
-                    // Передаем адреса полей упакованных ely_value для трассировки
-                    gc_trace_value(&e->key);
-                    gc_trace_value(&e->value);
-                    e = e->next;
+                    // Перемещаем саму ноду в новое полупространство
+                    gc_header_t* e_hdr = ptr_to_header(e);
+                    dict_entry* new_e = (dict_entry*)header_to_ptr(gc_move_object(e_hdr));
+                    
+                    // Перепривязываем указатели в цепочке
+                    if (prev) {
+                        prev->next = new_e;
+                    } else {
+                        d->buckets[i] = new_e;
+                    }
+                    
+                    // Трассируем ключ и значение внутри новой копии ноды
+                    gc_trace_value(&new_e->key);
+                    gc_trace_value(&new_e->value);
+                    
+                    prev = new_e;
+                    e = new_e->next; // Переходим к следующей старой ноде
                 }
             }
             break;
         }
-
+        
         case GC_OBJ_STRING:
+        case GC_OBJ_DOUBLE:
         case GC_OBJ_VALUE: 
-            // Примитивные кучные обертки не содержат внутри себя других указателей кучи,
-            // их трассировать вглубь не нужно.
             break;
     }
 }

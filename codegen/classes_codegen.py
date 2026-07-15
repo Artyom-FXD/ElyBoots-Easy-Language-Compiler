@@ -75,9 +75,6 @@ class ClassCodeGen(FuncCodeGen):
         init_list = []
         if parent and parent in self.classes_ast:
             parent_cls = self.classes_ast[parent]
-            # Используем collect_constructor_params для родителя, чтобы получить
-            # полный список параметров, которые нужны родительскому конструктору
-            # (включая унаследованные от предков wait-поля, не отменённые unwait)
             parent_params = self.collect_constructor_params(parent_cls)
             parent_param_names = [p.name for p in parent_params]
             if parent_param_names:
@@ -94,11 +91,17 @@ class ClassCodeGen(FuncCodeGen):
 
     def _gen_constructor_body(self, cls: ClassDeclaration, params: List[Parameter]):
         name = cls.name
+        
+        # Защищаем область видимости конструктора
+        self.push_scope()
 
-        # Регистрируем параметры конструктора в var_types, чтобы они
-        # имели приоритет перед полями класса при разрешении имён
+        # Регистрируем параметры и добавляем их в GC roots, если нужно
         for p in params:
             self.var_types[p.name] = p.type
+            if self.type_to_cpp(p.type, is_param=True) == 'ely_value':
+                self.emit(f"gc_add_root((void**)&{p.name});")
+                if self.scope_roots:
+                    self.scope_roots[-1].append(p.name)
 
         for f in cls.wait_fields:
             if f.type == 'str':
@@ -109,8 +112,6 @@ class ClassCodeGen(FuncCodeGen):
         for f in cls.fields:
             if f.modifier == 'static' or f in cls.wait_fields or f.is_unwait:
                 continue
-            # Если поле передаётся в параметре конструктора (например, backing-поле свойства),
-            # инициализируем из параметра
             matched_param = next((p for p in params if p.name == f.name), None)
             if matched_param:
                 ctype = self.type_to_cpp(f.type, is_field=True)
@@ -155,6 +156,8 @@ class ClassCodeGen(FuncCodeGen):
             self.current_class_name = old_class
             self.current_function = old_func
 
+        self.pop_scope()
+
     def _gen_method(self, cls: ClassDeclaration, method: MethodDeclaration):
         is_static = method.modifier == 'static'
         is_virtual = not is_static and not method.name.endswith('_constructor')
@@ -182,9 +185,8 @@ class ClassCodeGen(FuncCodeGen):
         self.current_function = f"{cls.name}_{method.name}"
         old_func_ret = getattr(self, 'func_return_type', None)
         self.func_return_type = method.return_type or 'void'
-        # Все методы класса (включая статические) используют for_signature=True,
-        # поэтому current_function_is_method=True для всех
         self.current_function_is_method = True
+        
         self.push_scope()
 
         if not is_static:
@@ -201,7 +203,6 @@ class ClassCodeGen(FuncCodeGen):
         for stmt in method.body:
             self.gen_statement(stmt)
 
-        # Закрываем все open collapse блоки перед закрытием метода
         for _ in range(self.collapse_depth):
             self.indent -= 1
             self.emit("}")
@@ -230,19 +231,36 @@ class ClassCodeGen(FuncCodeGen):
                             for p in method.parameters])
         self.emit(f"{ret} {full_name}({params}) {{")
         self.indent += 1
+        
         old_func = self.current_function
         self.current_function = full_name
+        old_func_ret = getattr(self, 'func_return_type', None)
+        self.func_return_type = method.return_type or 'void'
+        
         self.push_scope()
+        
         for p in method.parameters:
             self.var_types[p.name] = p.type
             if self.type_to_cpp(p.type, is_param=True) == 'ely_value':
-                self.emit_to_method(f"gc_add_root((void**)&{p.name});")
+                self.emit(f"gc_add_root((void**)&{p.name});") # Исправлено с emit_to_method на emit
+                if self.scope_roots:
+                    self.scope_roots[-1].append(p.name)
+                    
         for stmt in method.body:
             self.gen_statement(stmt)
+            
+        # Корректно закрываем collapse блоки для статических методов
+        for _ in range(self.collapse_depth):
+            self.indent -= 1
+            self.emit("}")
+        self.collapse_depth = 0
+        
         self.pop_scope()
         self.indent -= 1
         self.emit("}")
+        
         self.current_function = old_func
+        self.func_return_type = old_func_ret
 
     # -------------------------------------------------------------------
     # Вспомогательные
@@ -286,7 +304,6 @@ class ClassCodeGen(FuncCodeGen):
                 if f.name not in unwait_names:
                     params.append(Parameter(type=f.type, name=f.name))
 
-        # Также добавляем не-wait, не-static, не-unwait поля (например, backing-поля свойств)
         param_names = {p.name for p in params}
         for c in hierarchy:
             for f in c.fields:

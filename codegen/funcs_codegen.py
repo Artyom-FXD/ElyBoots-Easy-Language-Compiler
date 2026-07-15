@@ -1,8 +1,11 @@
-import sys, os
+import sys
+import os
 from typing import List, Optional, Any, Dict
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from parser import *
 from codegen.utils_codegen import CodeGenUtils, ExprCode
+
 
 class FuncCodeGen(CodeGenUtils):
     """Functions Generation. Second layer."""
@@ -37,6 +40,32 @@ class FuncCodeGen(CodeGenUtils):
         'str': 'ely_println_str',
     }
 
+    # Маппинг Ely-типов → реальный C++ тип
+    _ELY_TO_C_PARAM = {
+        'str': 'char*', 'int': 'int', 'uint': 'unsigned int',
+        'more': 'long long', 'umore': 'unsigned long long',
+        'byte': 'signed char', 'ubyte': 'unsigned char',
+        'flt': 'float', 'double': 'double', 'bool': 'int',
+        'char': 'char', 'void': 'void',
+        'size_t': 'size_t', 'char*': 'char*', 'const char*': 'char*',
+        'long long': 'long long', 'unsigned int': 'unsigned int',
+        'unsigned long long': 'unsigned long long',
+        'float': 'float', 'signed char': 'signed char',
+        'unsigned char': 'unsigned char',
+        'ely_value': 'ely_value', 'void*': 'void*', 'any': 'ely_value',
+    }
+    
+    _ELY_TO_C_RET = {
+        'str': 'char*', 'int': 'long long', 'uint': 'unsigned int',
+        'more': 'long long', 'umore': 'unsigned long long',
+        'byte': 'signed char', 'ubyte': 'unsigned char',
+        'flt': 'float', 'double': 'double', 'bool': 'int',
+        'char': 'char', 'void': 'void',
+        'char*': 'char*', 'size_t': 'size_t', 'long long': 'long long',
+        'unsigned int': 'unsigned int', 'float': 'float',
+        'ely_value': 'ely_value', 'void*': 'void*',
+    }
+
     def __init__(self, debug=False, is_module=False):
         super().__init__(debug, is_module)
         self.current_function: Optional[str] = None
@@ -48,54 +77,55 @@ class FuncCodeGen(CodeGenUtils):
     # Генерация выражений
     # -------------------------------------------------------------------
     def gen_expression(self, expr: Expression) -> ExprCode:
-        if isinstance(expr, Literal):
-            return self._gen_literal(expr)
-        if isinstance(expr, Identifier):
-            return self._gen_identifier(expr)
-        if isinstance(expr, BinaryOp):
-            return self._gen_binary_op(expr)
-        if isinstance(expr, UnaryOp):
-            return self._gen_unary_op(expr)
-        if isinstance(expr, Call):
-            return self._gen_call(expr)
-        if isinstance(expr, MemberAccess):
-            return self._gen_member_access(expr)
-        if isinstance(expr, Assignment):
-            return self._gen_assignment(expr)
-        if isinstance(expr, ReturnStatement):
-            return self._gen_return(expr)
-        if isinstance(expr, VariableDeclaration):
-            return self._gen_local_variable(expr)
-        if isinstance(expr, Conditional):
-            return self._gen_conditional(expr)
-        if isinstance(expr, FString):
-            return self._gen_fstring(expr)
-        if isinstance(expr, ArrayLiteral):
-            return self._gen_array_literal(expr)
-        if isinstance(expr, DictLiteral):
-            return self._gen_dict_literal(expr)
-        if isinstance(expr, IndexExpression):
-            return self._gen_index_expression(expr)
-        if isinstance(expr, Literal) and expr.value is None:
-            return ExprCode("ely_value_new_null()", "ely_value", "any")
-        if isinstance(expr, TypeOfExpression):
-            arg = self.gen_expression(expr.argument)
-            arg_ely = self.ensure_type(arg, 'ely_value')
-            return ExprCode(f"ely_typeof({arg_ely})", "char*", "str")
-        if isinstance(expr, FieldsExpression):
-            arg = self.gen_expression(expr.argument)
-            arg_ely = self.ensure_type(arg, 'ely_value')
-            return ExprCode(f"ely_value_get_fields({arg_ely})", "ely_value", "arr<str>")
-        if isinstance(expr, MethodsExpression):
-            arg = self.gen_expression(expr.argument)
-            arg_ely = self.ensure_type(arg, 'ely_value')
-            return ExprCode(f"ely_value_get_methods({arg_ely})", "ely_value", "arr<str>")
-        if isinstance(expr, AwaitExpression):
-            arg = self.gen_expression(expr.expression)
-            # _gen_call уже добавляет .get() для асинхронных вызовов
-            return ExprCode(f"{arg.code}", arg.raw_type, arg.ely_type)
-        self.error(f"Unknown expression type: {type(expr).__name__}", expr)
-        return ExprCode("ely_value_new_null()", "ely_value", "any")
+        match expr:
+            case Literal(value=None):
+                return ExprCode("ely_value_new_null()", "ely_value", "any")
+            case Literal():
+                return self._gen_literal(expr)
+            case Identifier():
+                return self._gen_identifier(expr)
+            case BinaryOp():
+                return self._gen_binary_op(expr)
+            case UnaryOp():
+                return self._gen_unary_op(expr)
+            case Call():
+                return self._gen_call(expr)
+            case MemberAccess():
+                return self._gen_member_access(expr)
+            case Assignment():
+                return self._gen_assignment(expr)
+            case ReturnStatement():
+                return self._gen_return(expr)
+            case VariableDeclaration():
+                return self._gen_local_variable(expr)
+            case Conditional():
+                return self._gen_conditional(expr)
+            case FString():
+                return self._gen_fstring(expr)
+            case ArrayLiteral():
+                return self._gen_array_literal(expr)
+            case DictLiteral():
+                return self._gen_dict_literal(expr)
+            case IndexExpression():
+                return self._gen_index_expression(expr)
+            case TypeOfExpression():
+                arg = self.gen_expression(expr.argument)
+                arg_ely = self.ensure_type(arg, 'ely_value')
+                return ExprCode(f"ely_typeof({arg_ely})", "char*", "str")
+            case FieldsExpression():
+                arg = self.gen_expression(expr.argument)
+                arg_ely = self.ensure_type(arg, 'ely_value')
+                return ExprCode(f"ely_value_get_fields({arg_ely})", "ely_value", "arr<str>")
+            case MethodsExpression():
+                arg = self.gen_expression(expr.argument)
+                arg_ely = self.ensure_type(arg, 'ely_value')
+                return ExprCode(f"ely_value_get_methods({arg_ely})", "ely_value", "arr<str>")
+            case AwaitExpression():
+                arg = self.gen_expression(expr.expression)
+                return ExprCode(f"{arg.code}", arg.raw_type, arg.ely_type)
+            case _:
+                self.error(f"Unknown expression type: {type(expr).__name__}", expr)
+                return ExprCode("ely_value_new_null()", "ely_value", "any")
 
     # -------------------------------------------------------------------
     # Literal — всегда ely_value
@@ -113,7 +143,6 @@ class FuncCodeGen(CodeGenUtils):
             # Оптимизация для строк <= 7 байт (Тег 0x2ULL / ELY_TAG_STR0)
             if len(v.encode('utf-8')) <= 7:
                 return ExprCode(f'ely_value_new_immediate_string("{escaped}")', "ely_value", "str")
-            # Обычная строка (уйдет в TLAB / GigaCage)
             return ExprCode(f'ely_value_new_string("{escaped}")', "ely_value", "str")
         return ExprCode("ely_value_new_null()", "ely_value", "any")
 
@@ -161,7 +190,6 @@ class FuncCodeGen(CodeGenUtils):
                     if sm.name == name:
                         return ExprCode(f"{self.current_class_name}::{sm.name}", "", "")
 
-                # Поля экземпляра — возвращаем как есть (native)
                 if self._is_field_in_hierarchy(cls, name):
                     field_type = self._get_field_type_in_hierarchy(cls, name)
                     raw = self.type_to_cpp(field_type, is_field=True)
@@ -324,7 +352,7 @@ class FuncCodeGen(CodeGenUtils):
             val = self.ensure_type(val, 'ely_value')
             return ExprCode(f"ely_value_set_key({obj}, \"{member}\", {val})", "void", "void")
 
-        # ---- Общий случай (например, присваивание результату вызова) ----
+        # ---- Общий случай ----
         target = self.gen_expression(node.target)
         if node.operator != '=':
             binary = BinaryOp(node.line, node.col, node.target, node.operator[:-1], node.value)
@@ -344,8 +372,6 @@ class FuncCodeGen(CodeGenUtils):
             ns_members = self.namespaces[ns_name]
             if member in ns_members:
                 full_name = ns_members[member]
-                # Для пространств имён возвращаем специальный код, 
-                # который будет обрабатываться в _gen_method_call
                 if full_name in self.classes_ast:
                     return ExprCode(f"{ns_name}_{member}", f"{full_name}*", f"namespace_{full_name}")
                 return ExprCode(full_name, "ely_value", "any")
@@ -380,17 +406,14 @@ class FuncCodeGen(CodeGenUtils):
                         break
                 if found_getter:
                     break
-                if search_cls.extends and search_cls.extends in self.classes_ast:
-                    search_cls = self.classes_ast[search_cls.extends]
-                else:
-                    search_cls = None
+                search_cls = self.classes_ast.get(search_cls.extends) if search_cls.extends else None
+                
             if found_getter:
                 ret_raw = self.type_to_cpp(found_getter.return_type or 'any', for_signature=True)
                 return ExprCode(f"({obj}->{getter_name}())", ret_raw, found_getter.return_type or 'any')
             self.error(f"Class '{obj_type}' has no member '{member}'", node)
             return ExprCode("ely_value_new_null()", "ely_value", "any")
 
-        # Для остальных – динамический доступ через ely_value
         return ExprCode(f"ely_value_get_key({obj}, \"{member}\")", "ely_value", "any")
 
     def _is_field_in_hierarchy(self, cls: ClassDeclaration, field: str) -> bool:
@@ -421,7 +444,7 @@ class FuncCodeGen(CodeGenUtils):
         if func_name.endswith('_constructor'):
             return self._gen_constructor_call(node, func_name)
 
-        # Прямой вызов конструктора класса (например, File("path"))
+        # Прямой вызов конструктора класса
         if func_name in self.classes_ast:
             return self._gen_constructor_call(node, func_name + '_constructor')
 
@@ -458,27 +481,25 @@ class FuncCodeGen(CodeGenUtils):
                     args.append(code.code)
                 args_code = ', '.join(args)
                 call_expr = f"{func_name}({args_code})"
-                # run() возвращает Task<T>, .get() возвращает T (нативный тип)
-                # Но мы должны обернуть его в ely_value для консистентности
                 result_expr = f"ElyEventLoop::instance().run([&]() {{ return {call_expr}; }}).get()"
                 raw_type = self.type_to_cpp(ret_ely)
+                
                 if raw_type in ('char*', 'int', 'long long', 'double', 'float'):
-                    # Оборачиваем нативный результат в ely_value
-                    if ret_ely == 'str':
-                        wrapper = "ely_value_new_string"
-                    elif ret_ely in ('int','uint','more','umore','byte','ubyte'):
-                        wrapper = "ely_value_new_int"
-                    elif ret_ely in ('flt', 'double'):
-                        wrapper = "ely_value_new_double"
-                    elif ret_ely == 'bool':
-                        wrapper = "ely_value_new_bool"
-                    else:
-                        wrapper = "ely_value_new_object"
+                    wrapper_map = {
+                        'str': 'ely_value_new_string',
+                        'int': 'ely_value_new_int', 'uint': 'ely_value_new_int',
+                        'more': 'ely_value_new_int', 'umore': 'ely_value_new_int',
+                        'byte': 'ely_value_new_int', 'ubyte': 'ely_value_new_int',
+                        'flt': 'ely_value_new_double', 'double': 'ely_value_new_double',
+                        'bool': 'ely_value_new_bool'
+                    }
+                    wrapper = wrapper_map.get(ret_ely, 'ely_value_new_object')
                     result_expr = f"{wrapper}({result_expr})"
-                # Асинхронные функции всегда возвращают ely_value
                 return ExprCode(result_expr, "ely_value", ret_ely)
+                
             if func_node.type_params:
                 return self._gen_generic_call(node, func_node)
+                
             args = []
             for i, arg in enumerate(node.arguments):
                 code = self.gen_expression(arg)
@@ -486,57 +507,26 @@ class FuncCodeGen(CodeGenUtils):
                     expected_c = self.type_to_cpp(func_node.parameters[i].type, is_param=True)
                     code = self.ensure_type(code, expected_c)
                 args.append(code.code)
-            # Определяем raw_type результата
+                
             if is_method:
                 raw = "ely_value"
             elif ret_ely == 'str':
                 raw = "char*"
-            elif ret_ely in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
+            elif ret_ely in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'bool', 'flt', 'double'):
                 raw = self.type_to_cpp(ret_ely)
             else:
                 raw = "ely_value"
             return ExprCode(f"{func_name}({', '.join(args)})", raw, ret_ely)
 
         # fields / methods
-        if func_name == 'fields':
+        if func_name in ('fields', 'methods'):
             if len(node.arguments) != 1:
-                self.error("fields() expects 1 argument", node)
+                self.error(f"{func_name}() expects 1 argument", node)
                 return ExprCode("ely_value_new_null()", "ely_value", "any")
             arg = self.gen_expression(node.arguments[0])
-            return ExprCode(f"ely_value_get_fields({arg})", "ely_value", "arr<str>")
-        if func_name == 'methods':
-            if len(node.arguments) != 1:
-                self.error("methods() expects 1 argument", node)
-                return ExprCode("ely_value_new_null()", "ely_value", "any")
-            arg = self.gen_expression(node.arguments[0])
-            return ExprCode(f"ely_value_get_methods({arg})", "ely_value", "arr<str>")
+            return ExprCode(f"ely_value_get_{func_name}({arg})", "ely_value", "arr<str>")
 
         return self._gen_builtin_or_extern_call(node, func_name)
-
-    # Маппинг Ely-типов (как в builtin_signatures) → реальный C++ тип
-    _ELY_TO_C_PARAM = {
-        'str': 'char*', 'int': 'int', 'uint': 'unsigned int',
-        'more': 'long long', 'umore': 'unsigned long long',
-        'byte': 'signed char', 'ubyte': 'unsigned char',
-        'flt': 'float', 'double': 'double', 'bool': 'int',
-        'char': 'char', 'void': 'void',
-        'size_t': 'size_t', 'char*': 'char*', 'const char*': 'char*',
-        'long long': 'long long', 'unsigned int': 'unsigned int',
-        'unsigned long long': 'unsigned long long',
-        'float': 'float', 'signed char': 'signed char',
-        'unsigned char': 'unsigned char',
-        'ely_value': 'ely_value', 'void*': 'void*', 'any': 'ely_value',
-    }
-    _ELY_TO_C_RET = {
-        'str': 'char*', 'int': 'long long', 'uint': 'unsigned int',
-        'more': 'long long', 'umore': 'unsigned long long',
-        'byte': 'signed char', 'ubyte': 'unsigned char',
-        'flt': 'float', 'double': 'double', 'bool': 'int',
-        'char': 'char', 'void': 'void',
-        'char*': 'char*', 'size_t': 'size_t', 'long long': 'long long',
-        'unsigned int': 'unsigned int', 'float': 'float',
-        'ely_value': 'ely_value', 'void*': 'void*',
-    }
 
     def _gen_builtin_or_extern_call(self, node: Call, func_name: str) -> ExprCode:
         # ---- Builtin ----
@@ -546,14 +536,15 @@ class FuncCodeGen(CodeGenUtils):
             # Специализированные print/println
             if func_name in ('print', 'println', 'printOld') and len(node.arguments) == 1:
                 arg_type = self.get_expression_type(node.arguments[0])
-                print_map = self._PRINTLN_MAP if func_name != 'printOld' else self._PRINT_MAP
-                if func_name == 'print':
+                print_map = self._PRINT_MAP if func_name == 'print' else self._PRINTLN_MAP
+                if func_name == 'printOld':
                     print_map = self._PRINT_MAP
+                    
                 if arg_type in print_map:
                     spec_func = print_map[arg_type]
                     arg_code = self.gen_expression(node.arguments[0])
                     native_raw = self.type_to_cpp(arg_type)
-                    if native_raw in ('ely_value',):
+                    if native_raw == 'ely_value':
                         if arg_type == 'str':
                             arg_native = ExprCode(f"({arg_code.code})->u.string_val", 'char*', 'str')
                         else:
@@ -572,7 +563,6 @@ class FuncCodeGen(CodeGenUtils):
                 args.append(code.code)
             call_expr = f"{c_name}({', '.join(args)})"
 
-            # Вычисляем правильный C++ raw_type для возврата
             c_ret = self._ELY_TO_C_RET.get(ret_ely, 'ely_value')
             return ExprCode(call_expr, c_ret, ret_ely)
 
@@ -598,7 +588,8 @@ class FuncCodeGen(CodeGenUtils):
                     code = self.ensure_type(code, c_type)
                 args.append(code.code)
             call_expr = f"{func_name}({', '.join(args)})"
-            if ret == 'char*' or ret == 'const char*':
+            
+            if ret in ('char*', 'const char*'):
                 ely_ret = 'str'
             elif ret in ('int', 'long', 'long long', 'unsigned', 'unsigned int', 'size_t'):
                 ely_ret = 'int'
@@ -608,13 +599,14 @@ class FuncCodeGen(CodeGenUtils):
                 ely_ret = 'bool'
             else:
                 ely_ret = 'any'
+                
             is_method = getattr(self, 'current_function_is_method', False)
             if is_method:
                 return self._wrap_result(call_expr, ely_ret)
             else:
                 if ely_ret == 'str':
                     return ExprCode(call_expr, "char*", "str")
-                elif ely_ret in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
+                elif ely_ret in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'bool', 'flt', 'double'):
                     return ExprCode(call_expr, self.type_to_cpp(ely_ret), ely_ret)
                 else:
                     return ExprCode(call_expr, "ely_value", ely_ret)
@@ -644,7 +636,6 @@ class FuncCodeGen(CodeGenUtils):
 
         # Обработка вызовов методов из пространств имён
         if obj_type.startswith('namespace_'):
-            # Вызываем статический метод напрямую: ClassName::method(...)
             namespace_class = obj_type[len('namespace_'):]
             if namespace_class in self.classes_ast:
                 cls = self.classes_ast[namespace_class]
@@ -662,7 +653,6 @@ class FuncCodeGen(CodeGenUtils):
 
         if obj_type in self.classes_ast:
             cls = self.classes_ast[obj_type]
-            # Статические методы
             for sm in cls.static_methods:
                 if sm.name == method:
                     args = [self.gen_expression(a) for a in node.arguments]
@@ -676,8 +666,7 @@ class FuncCodeGen(CodeGenUtils):
         # Интерфейсы – виртуальный вызов
         if obj_type in self.interfaces_ast:
             iface = self.interfaces_ast[obj_type]
-            method_exists = any(m.name == method for m in iface.methods)
-            if not method_exists:
+            if not any(m.name == method for m in iface.methods):
                 self.error(f"Interface '{obj_type}' has no method '{method}'", node)
                 return ExprCode("ely_value_new_null()", "ely_value", "any")
             args = [self.gen_expression(a) for a in node.arguments]
@@ -690,7 +679,7 @@ class FuncCodeGen(CodeGenUtils):
             return self._gen_dict_method(obj_code, method, node.arguments)
         if obj_type == 'str':
             return self._gen_str_method(obj_code, method, node.arguments)
-        if obj_type in ('int','uint','more','umore','flt','double'):
+        if obj_type in ('int', 'uint', 'more', 'umore', 'flt', 'double'):
             return self._gen_num_method(obj_code, method, obj_type)
 
         # Методы экземпляров классов
@@ -705,10 +694,8 @@ class FuncCodeGen(CodeGenUtils):
                         break
                 if method_node:
                     break
-                if search_cls.extends and search_cls.extends in self.classes_ast:
-                    search_cls = self.classes_ast[search_cls.extends]
-                else:
-                    search_cls = None
+                search_cls = self.classes_ast.get(search_cls.extends) if search_cls.extends else None
+                
             if method_node:
                 args = []
                 for i, arg in enumerate(node.arguments):
@@ -723,10 +710,8 @@ class FuncCodeGen(CodeGenUtils):
                 self.error(f"Class '{obj_type}' has no method '{method}'", node)
                 return ExprCode("ely_value_new_null()", "ely_value", "any")
 
-        # Динамическая диспетчеризация для any/неизвестного типа
-        args_code = [self.gen_expression(a) for a in node.arguments]
-        for i, a in enumerate(args_code):
-            args_code[i] = self.ensure_type(a, 'ely_value')
+        # Динамическая диспетчеризация
+        args_code = [self.ensure_type(self.gen_expression(a), 'ely_value') for a in node.arguments]
         argc = len(args_code)
         if argc == 0:
             return ExprCode(f"ely_value_call_method({obj_code}, \"{method}\", NULL, 0)", "ely_value", "any")
@@ -746,58 +731,58 @@ class FuncCodeGen(CodeGenUtils):
         for i, param in enumerate(params):
             if i < len(args):
                 args[i] = self.ensure_type(args[i], self.type_to_cpp(param.type, is_param=True))
-        # new ClassName(...) возвращает ClassName*, не ely_value
-        # ensure_type / _wrap_to_ely позаботятся о приведении к ely_value если нужно
         return ExprCode(f"(new {class_name}({', '.join(a.code for a in args)}))", f"{class_name}*", class_name)
 
     # -------------------------------------------------------------------
     # Арифметика и сравнения (двоичные и унарные)
     # -------------------------------------------------------------------
-
     @staticmethod
     def _fold_constants(node: BinaryOp) -> Optional[ExprCode]:
         """Свёртка констант: если оба операнда — Literal, вычислить на месте."""
-        from parser import Literal
-        if not isinstance(node.left, Literal) or not isinstance(node.right, Literal):
+        if not (isinstance(node.left, Literal) and isinstance(node.right, Literal)):
             return None
         lv, rv = node.left.value, node.right.value
         op = node.operator
 
         # Целочисленные операции
         if isinstance(lv, int) and isinstance(rv, int):
-            if op == '+':  return ExprCode(f"ely_value_new_int({lv + rv})", "ely_value", "int")
-            if op == '-':  return ExprCode(f"ely_value_new_int({lv - rv})", "ely_value", "int")
-            if op == '*':  return ExprCode(f"ely_value_new_int({lv * rv})", "ely_value", "int")
-            if op == '/':  return ExprCode(f"ely_value_new_int({lv // rv})", "ely_value", "int") if rv != 0 else None
-            if op == '%':  return ExprCode(f"ely_value_new_int({lv % rv})", "ely_value", "int") if rv != 0 else None
-            if op == '==': return ExprCode(f"ely_value_new_bool({1 if lv == rv else 0})", "ely_value", "bool")
-            if op == '!=': return ExprCode(f"ely_value_new_bool({1 if lv != rv else 0})", "ely_value", "bool")
-            if op == '<':  return ExprCode(f"ely_value_new_bool({1 if lv < rv else 0})", "ely_value", "bool")
-            if op == '<=': return ExprCode(f"ely_value_new_bool({1 if lv <= rv else 0})", "ely_value", "bool")
-            if op == '>':  return ExprCode(f"ely_value_new_bool({1 if lv > rv else 0})", "ely_value", "bool")
-            if op == '>=': return ExprCode(f"ely_value_new_bool({1 if lv >= rv else 0})", "ely_value", "bool")
-        # с плавающей точкой
+            match op:
+                case '+':  return ExprCode(f"ely_value_new_int({lv + rv})", "ely_value", "int")
+                case '-':  return ExprCode(f"ely_value_new_int({lv - rv})", "ely_value", "int")
+                case '*':  return ExprCode(f"ely_value_new_int({lv * rv})", "ely_value", "int")
+                case '/':  return ExprCode(f"ely_value_new_int({lv // rv})", "ely_value", "int") if rv != 0 else None
+                case '%':  return ExprCode(f"ely_value_new_int({lv % rv})", "ely_value", "int") if rv != 0 else None
+                case '==': return ExprCode(f"ely_value_new_bool({1 if lv == rv else 0})", "ely_value", "bool")
+                case '!=': return ExprCode(f"ely_value_new_bool({1 if lv != rv else 0})", "ely_value", "bool")
+                case '<':  return ExprCode(f"ely_value_new_bool({1 if lv < rv else 0})", "ely_value", "bool")
+                case '<=': return ExprCode(f"ely_value_new_bool({1 if lv <= rv else 0})", "ely_value", "bool")
+                case '>':  return ExprCode(f"ely_value_new_bool({1 if lv > rv else 0})", "ely_value", "bool")
+                case '>=': return ExprCode(f"ely_value_new_bool({1 if lv >= rv else 0})", "ely_value", "bool")
+                
+        # С плавающей точкой
         if isinstance(lv, (int, float)) and isinstance(rv, (int, float)):
             lf, rf = float(lv), float(rv)
-            if op == '+':  return ExprCode(f"ely_value_new_double({lf + rf})", "ely_value", "flt")
-            if op == '-':  return ExprCode(f"ely_value_new_double({lf - rf})", "ely_value", "flt")
-            if op == '*':  return ExprCode(f"ely_value_new_double({lf * rf})", "ely_value", "flt")
-            if op == '/':  return ExprCode(f"ely_value_new_double({lf / rf})", "ely_value", "flt") if rf != 0.0 else None
-            if op == '==': return ExprCode(f"ely_value_new_bool({1 if lf == rf else 0})", "ely_value", "bool")
-            if op == '!=': return ExprCode(f"ely_value_new_bool({1 if lf != rf else 0})", "ely_value", "bool")
-            if op == '<':  return ExprCode(f"ely_value_new_bool({1 if lf < rf else 0})", "ely_value", "bool")
-            if op == '<=': return ExprCode(f"ely_value_new_bool({1 if lf <= rf else 0})", "ely_value", "bool")
-            if op == '>':  return ExprCode(f"ely_value_new_bool({1 if lf > rf else 0})", "ely_value", "bool")
-            if op == '>=': return ExprCode(f"ely_value_new_bool({1 if lf >= rf else 0})", "ely_value", "bool")
-        # логические
+            match op:
+                case '+':  return ExprCode(f"ely_value_new_double({lf + rf})", "ely_value", "flt")
+                case '-':  return ExprCode(f"ely_value_new_double({lf - rf})", "ely_value", "flt")
+                case '*':  return ExprCode(f"ely_value_new_double({lf * rf})", "ely_value", "flt")
+                case '/':  return ExprCode(f"ely_value_new_double({lf / rf})", "ely_value", "flt") if rf != 0.0 else None
+                case '==': return ExprCode(f"ely_value_new_bool({1 if lf == rf else 0})", "ely_value", "bool")
+                case '!=': return ExprCode(f"ely_value_new_bool({1 if lf != rf else 0})", "ely_value", "bool")
+                case '<':  return ExprCode(f"ely_value_new_bool({1 if lf < rf else 0})", "ely_value", "bool")
+                case '<=': return ExprCode(f"ely_value_new_bool({1 if lf <= rf else 0})", "ely_value", "bool")
+                case '>':  return ExprCode(f"ely_value_new_bool({1 if lf > rf else 0})", "ely_value", "bool")
+                case '>=': return ExprCode(f"ely_value_new_bool({1 if lf >= rf else 0})", "ely_value", "bool")
+                
+        # Логические
         if isinstance(lv, bool) and isinstance(rv, bool):
-            if op == '&&': return ExprCode(f"ely_value_new_bool({1 if lv and rv else 0})", "ely_value", "bool")
-            if op == '||': return ExprCode(f"ely_value_new_bool({1 if lv or rv else 0})", "ely_value", "bool")
+            match op:
+                case '&&': return ExprCode(f"ely_value_new_bool({1 if lv and rv else 0})", "ely_value", "bool")
+                case '||': return ExprCode(f"ely_value_new_bool({1 if lv or rv else 0})", "ely_value", "bool")
         return None
 
     def _gen_binary_op(self, node: BinaryOp) -> ExprCode:
-        folded = self._fold_constants(node)
-        if folded is not None:
+        if (folded := self._fold_constants(node)) is not None:
             return folded
 
         left = self.gen_expression(node.left)
@@ -808,10 +793,11 @@ class FuncCodeGen(CodeGenUtils):
 
         # Операторные методы классов
         if left_type in self.classes_ast:
-            ops = {'+':'__add','-':'__sub','*':'__mul','/':'__div','%':'__mod',
-                '==':'__eq','!=':'__ne','<':'__lt','<=':'__le','>':'__gt','>=':'__ge'}
-            method_name = ops.get(op)
-            if method_name:
+            ops = {
+                '+': '__add', '-': '__sub', '*': '__mul', '/': '__div', '%': '__mod',
+                '==': '__eq', '!=': '__ne', '<': '__lt', '<=': '__le', '>': '__gt', '>=': '__ge'
+            }
+            if method_name := ops.get(op):
                 cls = self.classes_ast[left_type]
                 for m in cls.all_methods:
                     if m.name == method_name and len(m.parameters) >= 1:
@@ -820,45 +806,36 @@ class FuncCodeGen(CodeGenUtils):
                         return ExprCode(f"({left}->{method_name}({right}))", "ely_value", left_type)
 
         # Нативная арифметика для примитивных числовых типов
-        num_types = {'int','uint','more','umore','byte','ubyte','flt','double','long long'}
-        is_left_num = left_type in num_types
-        is_right_num = right_type in num_types
-
-        if is_left_num and is_right_num and op in '+-*/%':
-            is_float_op = left_type in ('flt','double') or right_type in ('flt','double')
+        num_types = {'int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'flt', 'double', 'long long'}
+        if left_type in num_types and right_type in num_types and op in '+-*/%':
+            is_float_op = left_type in ('flt', 'double') or right_type in ('flt', 'double')
             target_native = 'double' if is_float_op else 'long long'
             left_native = self.ensure_type(left, target_native)
             right_native = self.ensure_type(right, target_native)
             raw_expr = f"({left_native.code} {op} {right_native.code})"
-            if is_float_op:
-                return ExprCode(raw_expr, "double", "flt")
-            else:
-                return ExprCode(raw_expr, "long long", "int")
+            return ExprCode(raw_expr, "double", "flt") if is_float_op else ExprCode(raw_expr, "long long", "int")
 
         # Сравнения с числовыми типами
-        if is_left_num and is_right_num and op in ('==','!=','<','>','<=','>='):
-            target_native = 'double' if (left_type in ('flt','double') or right_type in ('flt','double')) else 'long long'
+        if left_type in num_types and right_type in num_types and op in ('==', '!=', '<', '>', '<=', '>='):
+            target_native = 'double' if (left_type in ('flt', 'double') or right_type in ('flt', 'double')) else 'long long'
             left_native = self.ensure_type(left, target_native)
             right_native = self.ensure_type(right, target_native)
-            raw_expr = f"({left_native.code} {op} {right_native.code})"
-            return ExprCode(raw_expr, "int", "bool")
+            return ExprCode(f"({left_native.code} {op} {right_native.code})", "int", "bool")
 
         # Логические &&/|| с bool
-        if left_type == 'bool' and right_type == 'bool' and op in ('&&','||'):
+        if left_type == 'bool' and right_type == 'bool' and op in ('&&', '||'):
             left_native = self.ensure_type(left, 'int')
             right_native = self.ensure_type(right, 'int')
             c_op = '&&' if op == '&&' else '||'
-            raw_expr = f"({left_native.code} {c_op} {right_native.code})"
-            return ExprCode(f"ely_value_new_bool({raw_expr})", "ely_value", "bool")
+            return ExprCode(f"ely_value_new_bool(({left_native.code} {c_op} {right_native.code}))", "ely_value", "bool")
 
         # Строковая конкатенация
         if op == '+' and (left_type == 'str' or right_type == 'str'):
-            # Если хотя бы один операнд не str (напр. str + int), используем ely_value_add
             if left_type != 'str' or right_type != 'str':
                 left_ely = self.ensure_type(left, 'ely_value')
                 right_ely = self.ensure_type(right, 'ely_value')
                 return ExprCode(f"ely_value_add({left_ely}, {right_ely})", "ely_value", "str")
-            # Чистая str + str конкатенация
+                
             is_method = getattr(self, 'current_function_is_method', False)
             if is_method:
                 left_ely = self.ensure_type(left, 'ely_value')
@@ -869,10 +846,11 @@ class FuncCodeGen(CodeGenUtils):
                 right_str = self.ensure_type(right, 'char*')
                 return ExprCode(f"ely_str_concat({left_str}, {right_str})", "char*", "str")
 
-        op_map = {'+':'add','-':'sub','*':'mul','/':'div','%':'mod',
-                '==':'eq','!=':'ne','<':'lt','<=':'le','>':'gt','>=':'ge',
-                '&&':'and','||':'or'}
-
+        op_map = {
+            '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '%': 'mod',
+            '==': 'eq', '!=': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge',
+            '&&': 'and', '||': 'or'
+        }
         left = self.ensure_type(left, 'ely_value')
         right = self.ensure_type(right, 'ely_value')
         func = f"ely_value_{op_map.get(op, op)}"
@@ -910,14 +888,11 @@ class FuncCodeGen(CodeGenUtils):
         result = None
         for part in node.parts:
             if isinstance(part, str):
-                escaped = part.replace('"','\\"').replace('\n','\\n')
+                escaped = part.replace('"', '\\"').replace('\n', '\\n')
                 part_expr = ExprCode(f'ely_value_new_string("{escaped}")', "ely_value", "str")
             else:
                 part_expr = self.ensure_type(self.gen_expression(part), 'ely_value')
-            if result is None:
-                result = part_expr
-            else:
-                result = ExprCode(f'ely_value_add({result}, {part_expr})', "ely_value", "str")
+            result = part_expr if result is None else ExprCode(f'ely_value_add({result}, {part_expr})', "ely_value", "str")
         return result
 
     def _gen_array_literal(self, node: ArrayLiteral) -> ExprCode:
@@ -968,66 +943,58 @@ class FuncCodeGen(CodeGenUtils):
     # -------------------------------------------------------------------
     def gen_statement(self, stmt: Statement):
         """Диспетчер инструкций для методов класса и управляющих конструкций."""
-        from parser.dtcs import (
-            ExpressionStatement, VariableDeclaration, ReturnStatement,
-            IfStatement, WhileLoop, ForLoop, ForEachLoop,
-            BreakStatement, ThrowStatement, Assignment, CollapseStatement
-        )
-
-        if isinstance(stmt, ExpressionStatement):
-            expr = self.gen_expression(stmt.expression)
-            self.emit_to_method(f"{expr.code};")
-        elif isinstance(stmt, Assignment):
-            expr = self._gen_assignment(stmt)
-            if expr.raw_type != 'void':
-                self.emit_to_method(f"{expr.code};")
-        elif isinstance(stmt, ReturnStatement):
-            self._gen_return(stmt)
-        elif isinstance(stmt, IfStatement):
-            self._gen_if(stmt)
-        elif isinstance(stmt, WhileLoop):
-            self._gen_while(stmt)
-        elif isinstance(stmt, ForLoop):
-            self._gen_for(stmt)
-        elif isinstance(stmt, ForEachLoop):
-            self._gen_foreach(stmt)
-        elif isinstance(stmt, VariableDeclaration):
-            self._gen_local_variable(stmt)
-        elif isinstance(stmt, BreakStatement):
-            self.emit_to_method("break;")
-        elif isinstance(stmt, ThrowStatement):
-            val = self.gen_expression(stmt.value)
-            val = self.ensure_type(val, 'ely_value')
-            self.emit_to_method(f"throw {val.code};")
-        elif isinstance(stmt, CollapseStatement):
-            name = stmt.name
-            if name in self.var_types:
-                ctype = self.var_types[name]
-                if ctype == 'str':
-                    self.emit_to_method(f"if ({name}) {{ ely_str_free({name}); }}");
-                elif ctype in self.classes_ast:
-                    self.emit_to_method(f"delete {name};");
-                elif ctype == 'any' or self.type_to_cpp(ctype) == 'ely_value':
-                    # Только для ely_value переменных нужно убирать GC-корень
-                    self.emit_to_method(f"gc_remove_root((void**)&{name});");
-                del self.var_types[name]
-            for scope in self.scopes:
-                if name in scope:
-                    del scope[name]
-            self.emit_to_method(f"// collapse {name}");
-            # Открываем новый C++ блок, чтобы можно было переиспользовать имя с другим типом
-            self.emit_to_method("{");
-            self.collapse_depth += 1;
-        elif isinstance(stmt, AsafeBlock):
-            self._gen_asafe(stmt)
-        else:
-            # Для неизвестных типов: если есть expression — генерируем его
-            if hasattr(stmt, 'expression'):
+        match stmt:
+            case ExpressionStatement():
                 expr = self.gen_expression(stmt.expression)
+                self.emit_to_method(f"{expr.code};")
+            case Assignment():
+                expr = self._gen_assignment(stmt)
                 if expr.raw_type != 'void':
                     self.emit_to_method(f"{expr.code};")
-            else:
-                self.error(f"Unknown statement type: {type(stmt).__name__}", stmt)
+            case ReturnStatement():
+                self._gen_return(stmt)
+            case IfStatement():
+                self._gen_if(stmt)
+            case WhileLoop():
+                self._gen_while(stmt)
+            case ForLoop():
+                self._gen_for(stmt)
+            case ForEachLoop():
+                self._gen_foreach(stmt)
+            case VariableDeclaration():
+                self._gen_local_variable(stmt)
+            case BreakStatement():
+                self.emit_to_method("break;")
+            case ThrowStatement():
+                val = self.gen_expression(stmt.value)
+                val = self.ensure_type(val, 'ely_value')
+                self.emit_to_method(f"throw {val.code};")
+            case CollapseStatement():
+                name = stmt.name
+                if name in self.var_types:
+                    ctype = self.var_types[name]
+                    if ctype == 'str':
+                        self.emit_to_method(f"if ({name}) {{ ely_str_free({name}); }}")
+                    elif ctype in self.classes_ast:
+                        self.emit_to_method(f"delete {name};")
+                    elif ctype == 'any' or self.type_to_cpp(ctype) == 'ely_value':
+                        self.emit_to_method(f"gc_remove_root((void**)&{name});")
+                    del self.var_types[name]
+                for scope in self.scopes:
+                    if name in scope:
+                        del scope[name]
+                self.emit_to_method(f"// collapse {name}")
+                self.emit_to_method("{")
+                self.collapse_depth += 1
+            case AsafeBlock():
+                self._gen_asafe(stmt)
+            case _:
+                if hasattr(stmt, 'expression'):
+                    expr = self.gen_expression(stmt.expression)
+                    if expr.raw_type != 'void':
+                        self.emit_to_method(f"{expr.code};")
+                else:
+                    self.error(f"Unknown statement type: {type(stmt).__name__}", stmt)
 
     # -------------------------------------------------------------------
     # AsafeBlock — безопасный блок с обработкой исключений
@@ -1041,22 +1008,20 @@ class FuncCodeGen(CodeGenUtils):
             self.gen_statement(stmt)
         self.pop_scope()
         self.indent -= 1
+        
         if node.except_handler:
             except_h = node.except_handler
             exc_type_ely = except_h.exception_type or ''
-            # Преобразуем Ely-тип в C++ тип для catch
-            if exc_type_ely == 'str':
-                exc_type_cpp = 'const char*'
-            elif exc_type_ely in ('int','uint','more','umore','byte','ubyte'):
-                exc_type_cpp = 'long long'
-            elif exc_type_ely in ('flt','double'):
-                exc_type_cpp = 'double'
-            elif exc_type_ely == 'bool':
-                exc_type_cpp = 'int'
-            else:
-                exc_type_cpp = exc_type_ely if exc_type_ely else '...'
+            
+            match exc_type_ely:
+                case 'str': exc_type_cpp = 'const char*'
+                case 'int' | 'uint' | 'more' | 'umore' | 'byte' | 'ubyte': exc_type_cpp = 'long long'
+                case 'flt' | 'double': exc_type_cpp = 'double'
+                case 'bool': exc_type_cpp = 'int'
+                case _: exc_type_cpp = exc_type_ely if exc_type_ely else '...'
+                
             exc_param = except_h.parameter or ''
-            catch_clause = f"catch ({exc_type_cpp} {exc_param})" if (exc_param and exc_type_cpp) else f"catch (...)"
+            catch_clause = f"catch ({exc_type_cpp} {exc_param})" if (exc_param and exc_type_cpp != '...') else "catch (...)"
             self.emit_to_method(f"}} {catch_clause} {{")
             self.indent += 1
             self.push_scope()
@@ -1074,23 +1039,29 @@ class FuncCodeGen(CodeGenUtils):
     def _gen_if(self, node: IfStatement):
         cond_expr = self.gen_expression(node.condition)
         cond_type = self.get_expression_type(node.condition)
-        if cond_expr.is_native and cond_type in ('int','uint','more','umore','byte','ubyte','bool','flt','double','long long'):
+        num_types = {'int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'bool', 'flt', 'double', 'long long'}
+        
+        if cond_expr.is_native and cond_type in num_types:
             self.emit_to_method(f"if ({cond_expr.code}) {{")
         elif cond_expr.is_wrapped:
             self.emit_to_method(f"if (ely_value_as_bool({cond_expr.code})) {{")
         else:
             cond = self.ensure_type(cond_expr, 'ely_value')
             self.emit_to_method(f"if (ely_value_as_bool({cond})) {{")
+            
         self.indent += 1
         self.push_scope()
-        for stmt in node.then_body: self.gen_statement(stmt)
+        for stmt in node.then_body:
+            self.gen_statement(stmt)
         self.pop_scope()
         self.indent -= 1
+        
         if node.else_body:
             self.emit_to_method("} else {")
             self.indent += 1
             self.push_scope()
-            for stmt in node.else_body: self.gen_statement(stmt)
+            for stmt in node.else_body:
+                self.gen_statement(stmt)
             self.pop_scope()
             self.indent -= 1
         self.emit_to_method("}")
@@ -1098,102 +1069,99 @@ class FuncCodeGen(CodeGenUtils):
     def _gen_while(self, node: WhileLoop):
         cond_expr = self.gen_expression(node.condition)
         cond_type = self.get_expression_type(node.condition)
-        if cond_expr.is_native and cond_type in ('int','uint','more','umore','byte','ubyte','bool','flt','double','long long'):
+        num_types = {'int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'bool', 'flt', 'double', 'long long'}
+        
+        if cond_expr.is_native and cond_type in num_types:
             self.emit_to_method(f"while ({cond_expr.code}) {{")
         elif cond_expr.is_wrapped:
             self.emit_to_method(f"while (ely_value_as_bool({cond_expr.code})) {{")
         else:
             cond = self.ensure_type(cond_expr, 'ely_value')
             self.emit_to_method(f"while (ely_value_as_bool({cond})) {{")
+            
         self.indent += 1
         self.push_scope()
-        for stmt in node.body: self.gen_statement(stmt)
+        for stmt in node.body:
+            self.gen_statement(stmt)
         self.pop_scope()
         self.indent -= 1
         self.emit_to_method("}")
 
     def _gen_for(self, node: ForLoop):
-        from parser.dtcs import VariableDeclaration
         self.push_scope()
-        # init: VariableDeclaration → генерируем объявление в заголовке цикла
-        # init: ExpressionStatement → "expr; cond; inc"
         init_for = ";"
         if node.init:
-            from parser.dtcs import ExpressionStatement
-            if isinstance(node.init, VariableDeclaration):
-                # Для объявления переменной генерируем тип и имя в заголовке цикла
-                resolved = self.resolve_type_alias(node.init.type)
-                c_type = self.type_to_cpp(resolved)
-                if node.init.initializer:
-                    init_code = self.gen_expression(node.init.initializer)
-                    # Убеждаемся, что тип совпадает
-                    init_code = self.ensure_type(init_code, c_type)
-                    init_for = f"{c_type} {node.init.name} = {init_code.code}"
-                else:
-                    init_for = f"{c_type} {node.init.name} = 0"
-                # Добавляем переменную в таблицу типов для использования внутри цикла
-                self.var_types[node.init.name] = resolved
-            elif isinstance(node.init, ExpressionStatement):
-                init_code = self.gen_expression(node.init.expression)
-                init_for = f"{init_code.code};"
-            else:
-                init_code = self.gen_expression(node.init)
-                init_for = f"{init_code.code};"
+            match node.init:
+                case VariableDeclaration():
+                    resolved = self.resolve_type_alias(node.init.type)
+                    c_type = self.type_to_cpp(resolved)
+                    if node.init.initializer:
+                        init_code = self.ensure_type(self.gen_expression(node.init.initializer), c_type)
+                        init_for = f"{c_type} {node.init.name} = {init_code.code}"
+                    else:
+                        init_for = f"{c_type} {node.init.name} = 0"
+                    self.var_types[node.init.name] = resolved
+                case ExpressionStatement():
+                    init_code = self.gen_expression(node.init.expression)
+                    init_for = f"{init_code.code};"
+                case _:
+                    init_code = self.gen_expression(node.init)
+                    init_for = f"{init_code.code};"
+                    
         cond_for = "1"
         if node.condition:
             cond_expr = self.gen_expression(node.condition)
             cond_type = self.get_expression_type(node.condition)
-            if cond_expr.is_native and cond_type in ('int','uint','more','umore','byte','ubyte','bool','flt','double','long long'):
+            num_types = {'int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'bool', 'flt', 'double', 'long long'}
+            if cond_expr.is_native and cond_type in num_types:
                 cond_for = cond_expr.code
             elif cond_expr.is_wrapped:
                 cond_for = f"ely_value_as_bool({cond_expr})"
             else:
                 cond = self.ensure_type(cond_expr, 'ely_value')
                 cond_for = f"ely_value_as_bool({cond})"
+                
         inc_for = ""
         if node.update:
-            upd_code = self.gen_expression(node.update)
-            inc_for = upd_code.code
+            inc_for = self.gen_expression(node.update).code
+            
         self.emit_to_method(f"for ({init_for}; {cond_for}; {inc_for}) {{")
         self.indent += 1
         self.push_scope()
-        for stmt in node.body: self.gen_statement(stmt)
+        for stmt in node.body:
+            self.gen_statement(stmt)
         self.pop_scope()
         self.indent -= 1
         self.emit_to_method("}")
         self.pop_scope()
 
     def _gen_foreach(self, node: ForEachLoop):
-        from parser.dtcs import VariableDeclaration
-        # node.iterable — выражение коллекции
         collection = self.ensure_type(self.gen_expression(node.iterable), 'ely_value')
-        # Генерируем уникальное имя для переменной цикла
         loop_counter = f"__i_{self.temp_counter}"
         self.temp_counter += 1
+        
         self.emit_to_method(f"for (size_t {loop_counter} = 0; {loop_counter} < ely_array_len({collection}); {loop_counter}++) {{")
         self.indent += 1
         self.push_scope()
-        # node.item_decl — VariableDeclaration для переменной итерации
+        
         decl = node.item_decl
-        item_type = 'any'
-        if isinstance(decl, VariableDeclaration) and decl.type:
-            item_type = decl.type
+        item_type = decl.type if (isinstance(decl, VariableDeclaration) and decl.type) else 'any'
         var_name = decl.name if isinstance(decl, VariableDeclaration) else '__item'
         self.var_types[var_name] = item_type
         raw_type = self.type_to_cpp(item_type)
+        
         if raw_type == 'ely_value':
             self.emit_to_method(f"ely_value {var_name} = ely_array_get({collection}, {loop_counter});")
-            if self.use_raii_roots:
-                self.emit_to_method(f"GC_AUTO_ROOT({var_name});")
-            else:
-                self.emit_to_method(f"gc_add_root((void**)&{var_name});")
+            self.emit_to_method(f"GC_AUTO_ROOT({var_name});" if self.use_raii_roots else f"gc_add_root((void**)&{var_name});")
         elif raw_type == 'char*':
             self.emit_to_method(f"char* {var_name} = ely_value_to_string(ely_array_get({collection}, {loop_counter}));")
         elif raw_type in ('int', 'long long'):
             self.emit_to_method(f"{raw_type} {var_name} = ely_value_as_int(ely_array_get({collection}, {loop_counter}));")
         else:
             self.emit_to_method(f"{raw_type} {var_name} = ely_value_as_{raw_type}(ely_array_get({collection}, {loop_counter}));")
-        for stmt in node.body: self.gen_statement(stmt)
+            
+        for stmt in node.body:
+            self.gen_statement(stmt)
         self.pop_scope()
         self.indent -= 1
         self.emit_to_method("}")
@@ -1207,20 +1175,16 @@ class FuncCodeGen(CodeGenUtils):
 
         val = self.gen_expression(node.value)
 
-        # Определяем ожидаемый raw_type возврата
         if self.func_return_type and self.func_return_type != 'void':
-            # Используем for_signature=True чтобы получить ely_value для методов
             if self.current_function_is_method:
                 ret_raw = 'ely_value'
             else:
-                # Для глобальных функций используем for_signature=True (всегда ely_value)
-                # Но для функций, чей return type native, должны возвращать native
                 ret_ely = self.resolve_type_alias(self.func_return_type)
                 if ret_ely in self.classes_ast or ret_ely in getattr(self, 'interfaces_ast', {}):
                     ret_raw = 'ely_value'
-                elif ret_ely in ('str',):
+                elif ret_ely == 'str':
                     ret_raw = 'char*'
-                elif ret_ely in ('int','uint','more','umore','byte','ubyte','bool','flt','double'):
+                elif ret_ely in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'bool', 'flt', 'double'):
                     ret_raw = self.type_to_cpp(ret_ely)
                 else:
                     ret_raw = 'ely_value'
@@ -1237,14 +1201,12 @@ class FuncCodeGen(CodeGenUtils):
     def _gen_local_variable(self, node: VariableDeclaration) -> ExprCode:
         resolved = self.resolve_type_alias(node.type)
         c_type = self.type_to_cpp(resolved)
-        is_native = resolved in ('int','uint','more','umore','byte','ubyte','str','bool','flt','double','char')
+        is_native = resolved in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte', 'str', 'bool', 'flt', 'double', 'char')
 
         if node.initializer:
             init = self.gen_expression(node.initializer)
-            # Если переменная native и init это ely_value — unwrap
             if is_native and init.is_wrapped:
                 init = self.ensure_type(init, c_type)
-            # Если переменная ely_value и init это native — wrap
             elif not is_native and init.is_native:
                 init = self.ensure_type(init, "ely_value")
 
@@ -1254,12 +1216,8 @@ class FuncCodeGen(CodeGenUtils):
             self.var_types[node.name] = resolved
             self.emit_to_method(f"{c_type} {node.name} = {init.code};")
 
-            # GC-register для ely_value переменных
             if c_type == 'ely_value':
-                if self.use_raii_roots:
-                    self.emit_to_method(f"GC_AUTO_ROOT({node.name});")
-                else:
-                    self.emit_to_method(f"gc_add_root((void**)&{node.name});")
+                self.emit_to_method(f"GC_AUTO_ROOT({node.name});" if self.use_raii_roots else f"gc_add_root((void**)&{node.name});")
                 if self.scope_roots:
                     self.scope_roots[-1].append(node.name)
 
@@ -1268,10 +1226,7 @@ class FuncCodeGen(CodeGenUtils):
             self.var_types[node.name] = resolved
             if c_type == 'ely_value':
                 self.emit_to_method(f"{c_type} {node.name} = ely_value_new_null();")
-                if self.use_raii_roots:
-                    self.emit_to_method(f"GC_AUTO_ROOT({node.name});")
-                else:
-                    self.emit_to_method(f"gc_add_root((void**)&{node.name});")
+                self.emit_to_method(f"GC_AUTO_ROOT({node.name});" if self.use_raii_roots else f"gc_add_root((void**)&{node.name});")
                 if self.scope_roots:
                     self.scope_roots[-1].append(node.name)
             elif c_type == 'char*':
@@ -1287,19 +1242,11 @@ class FuncCodeGen(CodeGenUtils):
     # -------------------------------------------------------------------
     def _wrap_result(self, code_or_str: Any, ely_type: str) -> ExprCode:
         """Оборачивает нативный результат в ely_value для возврата из методов класса."""
-        # Разворачиваем скрытое значение, если прилетел объект с __ex_value
         if hasattr(code_or_str, '__ex_value'):
             code_or_str = getattr(code_or_str, '__ex_value')
 
-        if isinstance(code_or_str, str):
-            expr = ExprCode(code_or_str, self.type_to_cpp(ely_type), ely_type)
-        else:
-            expr = code_or_str
-
-        if expr.is_wrapped:
-            return expr
-
-        return self._wrap_to_ely(expr)
+        expr = ExprCode(code_or_str, self.type_to_cpp(ely_type), ely_type) if isinstance(code_or_str, str) else code_or_str
+        return expr if expr.is_wrapped else self._wrap_to_ely(expr)
 
     def _wrap_to_ely(self, expr: ExprCode) -> ExprCode:
         """Принудительно упаковывает нативное выражение во внутренний тип ely_value."""
@@ -1307,119 +1254,119 @@ class FuncCodeGen(CodeGenUtils):
             return expr
             
         t = self.resolve_type_alias(expr.ely_type)
-        
-        if t in ('int', 'uint', 'more', 'umore', 'byte', 'ubyte'):
-            return ExprCode(f"ely_value_new_int({expr.code})", "ely_value", t)
-        if t in ('flt', 'double'):
-            return ExprCode(f"ely_value_new_double({expr.code})", "ely_value", t)
-        if t == 'bool':
-            return ExprCode(f"ely_value_new_bool({expr.code})", "ely_value", t)
-        if t == 'str':
-            return ExprCode(f"ely_value_new_string({expr.code})", "ely_value", t)
-            
-        # Для объектов классов и интерфейсов (передаются как указатели ClassName*)
-        return ExprCode(f"ely_value_new_object({expr.code})", "ely_value", t)
+        match t:
+            case 'int' | 'uint' | 'more' | 'umore' | 'byte' | 'ubyte':
+                return ExprCode(f"ely_value_new_int({expr.code})", "ely_value", t)
+            case 'flt' | 'double':
+                return ExprCode(f"ely_value_new_double({expr.code})", "ely_value", t)
+            case 'bool':
+                return ExprCode(f"ely_value_new_bool({expr.code})", "ely_value", t)
+            case 'str':
+                return ExprCode(f"ely_value_new_string({expr.code})", "ely_value", t)
+            case _:
+                return ExprCode(f"ely_value_new_object({expr.code})", "ely_value", t)
 
     # -------------------------------------------------------------------
     # Встраиваемые методы для массивов, строк, словарей
     # -------------------------------------------------------------------
     def _gen_array_method(self, obj: ExprCode, method: str, args: List[Expression]) -> ExprCode:
         args_code = [self.ensure_type(self.gen_expression(a), 'ely_value') for a in args]
-        if method == 'len':
-            return ExprCode(f"ely_value_call_method({obj}, \"len\", NULL, 0)", "ely_value", "int")
-        if method == 'push':
-            if not args_code:
-                return ExprCode(f"ely_value_call_method({obj}, \"push\", NULL, 0)", "void", "void")
-            arg_arr = f"__args_{self.temp_counter}"
-            self.temp_counter += 1
-            self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
-            return ExprCode(f"ely_value_call_method({obj}, \"push\", {arg_arr}, 1)", "void", "void")
-        if method == 'pop':
-            return ExprCode(f"ely_value_call_method({obj}, \"pop\", NULL, 0)", "ely_value", "any")
-        if method == 'has':
-            if not args_code:
-                return ExprCode("ely_value_new_bool(0)", "ely_value", "bool")
-            arg_arr = f"__args_{self.temp_counter}"
-            self.temp_counter += 1
-            self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
-            return ExprCode(f"ely_value_call_method({obj}, \"has\", {arg_arr}, 1)", "ely_value", "bool")
-        return ExprCode(f"ely_value_call_method({obj}, \"{method}\", NULL, 0)", "ely_value", "any")
+        match method:
+            case 'len':
+                return ExprCode(f"ely_value_call_method({obj}, \"len\", NULL, 0)", "ely_value", "int")
+            case 'push':
+                if not args_code:
+                    return ExprCode(f"ely_value_call_method({obj}, \"push\", NULL, 0)", "void", "void")
+                arg_arr = f"__args_{self.temp_counter}"
+                self.temp_counter += 1
+                self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
+                return ExprCode(f"ely_value_call_method({obj}, \"push\", {arg_arr}, 1)", "void", "void")
+            case 'pop':
+                return ExprCode(f"ely_value_call_method({obj}, \"pop\", NULL, 0)", "ely_value", "any")
+            case 'has':
+                if not args_code:
+                    return ExprCode("ely_value_new_bool(0)", "ely_value", "bool")
+                arg_arr = f"__args_{self.temp_counter}"
+                self.temp_counter += 1
+                self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
+                return ExprCode(f"ely_value_call_method({obj}, \"has\", {arg_arr}, 1)", "ely_value", "bool")
+            case _:
+                return ExprCode(f"ely_value_call_method({obj}, \"{method}\", NULL, 0)", "ely_value", "any")
 
     def _gen_dict_method(self, obj: ExprCode, method: str, args: List[Expression]) -> ExprCode:
         args_code = [self.ensure_type(self.gen_expression(a), 'ely_value') for a in args]
-        if method == 'keys':
-            return ExprCode(f"ely_value_call_method({obj}, \"keys\", NULL, 0)", "ely_value", "arr<any>")
-        if method == 'has':
-            if not args_code:
-                return ExprCode("ely_value_new_bool(0)", "ely_value", "bool")
-            arg_arr = f"__args_{self.temp_counter}"
-            self.temp_counter += 1
-            self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
-            return ExprCode(f"ely_value_call_method({obj}, \"has\", {arg_arr}, 1)", "ely_value", "bool")
-        if method == 'del':
-            if not args_code:
-                return ExprCode("", "void", "void")
-            arg_arr = f"__args_{self.temp_counter}"
-            self.temp_counter += 1
-            self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
-            return ExprCode(f"ely_value_call_method({obj}, \"del\", {arg_arr}, 1)", "void", "void")
-        return ExprCode(f"ely_value_call_method({obj}, \"{method}\", NULL, 0)", "ely_value", "any")
+        match method:
+            case 'keys':
+                return ExprCode(f"ely_value_call_method({obj}, \"keys\", NULL, 0)", "ely_value", "arr<any>")
+            case 'has':
+                if not args_code:
+                    return ExprCode("ely_value_new_bool(0)", "ely_value", "bool")
+                arg_arr = f"__args_{self.temp_counter}"
+                self.temp_counter += 1
+                self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
+                return ExprCode(f"ely_value_call_method({obj}, \"has\", {arg_arr}, 1)", "ely_value", "bool")
+            case 'del':
+                if not args_code:
+                    return ExprCode("", "void", "void")
+                arg_arr = f"__args_{self.temp_counter}"
+                self.temp_counter += 1
+                self.emit_to_method(f"ely_value {arg_arr}[] = {{ {args_code[0].code} }};")
+                return ExprCode(f"ely_value_call_method({obj}, \"del\", {arg_arr}, 1)", "void", "void")
+            case _:
+                return ExprCode(f"ely_value_call_method({obj}, \"{method}\", NULL, 0)", "ely_value", "any")
 
     def _gen_str_method(self, obj: ExprCode, method: str, args: List[Expression]) -> ExprCode:
         if method == 'len':
-            if obj.is_wrapped:
-                return ExprCode(f"ely_str_len(ely_value_to_string({obj}))", "size_t", "int")
-            return ExprCode(f"ely_str_len({obj})", "size_t", "int")
+            return ExprCode(f"ely_str_len(ely_value_to_string({obj}))", "size_t", "int") if obj.is_wrapped else ExprCode(f"ely_str_len({obj})", "size_t", "int")
+            
         if method in ('concat', 'dup', 'trim'):
             obj_str = self.ensure_type(obj, 'char*')
             args_code = [self.ensure_type(self.gen_expression(a), 'char*') for a in args]
-            func_name = f"ely_str_{method}"
-            return ExprCode(f"{func_name}({', '.join([obj_str.code] + [a.code for a in args_code])})", "char*", "str")
+            return ExprCode(f"ely_str_{method}({', '.join([obj_str.code] + [a.code for a in args_code])})", "char*", "str")
+            
         if method == 'substr':
             obj_str = self.ensure_type(obj, 'char*')
             args_code = [self.ensure_type(self.gen_expression(a), 'long long') for a in args]
             return ExprCode(f"ely_str_substr({obj_str}, {', '.join(a.code for a in args_code)})", "char*", "str")
+            
         if method == 'replace':
             obj_str = self.ensure_type(obj, 'char*')
             args_code = [self.ensure_type(self.gen_expression(a), 'char*') for a in args]
             return ExprCode(f"ely_str_replace({obj_str}, {', '.join(a.code for a in args_code)})", "char*", "str")
+            
         if method in ('cmp', 'equals'):
             obj_str = self.ensure_type(obj, 'char*')
             args_code = [self.ensure_type(self.gen_expression(a), 'char*') for a in args]
             return ExprCode(f"ely_str_cmp({obj_str}, {args_code[0].code})", "int", "bool")
+            
         return self._gen_default_method(obj, method)
 
     def _gen_num_method(self, obj: ExprCode, method: str, t: str) -> ExprCode:
         if method == 'toStr':
-            prefix = {'int':'ely_int_to_str','uint':'ely_uint_to_str',
-                      'more':'ely_more_to_str','umore':'ely_umore_to_str',
-                      'flt':'ely_flt_to_str','double':'ely_double_to_str'}
+            prefix = {
+                'int': 'ely_int_to_str', 'uint': 'ely_uint_to_str',
+                'more': 'ely_more_to_str', 'umore': 'ely_umore_to_str',
+                'flt': 'ely_flt_to_str', 'double': 'ely_double_to_str'
+            }
             if t in prefix:
                 obj_native = self.ensure_type(obj, self.type_to_cpp(t))
                 return ExprCode(f"{prefix[t]}({obj_native})", "char*", "str")
             return ExprCode(f"ely_int_to_str({obj})", "char*", "str")
         return self._gen_default_method(obj, method)
 
-
     def _gen_default_method(self, obj: ExprCode, method: str) -> ExprCode:
         return ExprCode(f"ely_value_call_method({obj}, \"{method}\", NULL, 0)", "ely_value", "any")
 
     # -------------------------------------------------------------------
-    # Генерация top-level функции (вызывается из CppCodeGen._gen_one_function)
+    # Генерация top-level функции
     # -------------------------------------------------------------------
     def gen_function(self, method: MethodDeclaration):
-        """Генерирует top-level функцию: сигнатура + тело.
-        Вызывается из CppCodeGen._gen_one_function.
-        Для глобальных функций используем нативные типы (без for_signature=True),
-        чтобы совпадало с forward declaration в codegen.py.
-        """
+        """Генерирует top-level функцию: сигнатура + тело."""
         ret_raw = self.type_to_cpp(method.return_type or 'void')
-        params = ', '.join([f"{self.type_to_cpp(p.type, is_param=True)} {p.name}"
-                            for p in method.parameters])
+        params = ', '.join([f"{self.type_to_cpp(p.type, is_param=True)} {p.name}" for p in method.parameters])
         self.emit_to_method(f"{ret_raw} {method.name}({params}) {{")
         self.indent += 1
 
-        # Пролог для main: инициализация GC + chdir к папке exe
         if method.name == 'main':
             self.emit_to_method("gc_init();")
             self.emit_to_method("_global_init();")
@@ -1444,7 +1391,6 @@ class FuncCodeGen(CodeGenUtils):
         for stmt in method.body:
             self.gen_statement(stmt)
 
-        # Закрываем все open collapse блоки перед закрытием функции
         for _ in range(self.collapse_depth):
             self.indent -= 1
             self.emit_to_method("}")
@@ -1453,21 +1399,20 @@ class FuncCodeGen(CodeGenUtils):
         self.pop_scope()
         self.indent -= 1
         self.emit_to_method("}")
+        
         self.current_function = old_func
         self.func_return_type = old_func_ret
         self.current_function_is_method = old_method_flag
 
     # -------------------------------------------------------------------
-    # Статические методы (вызываются внутри функций, где is_method=False)
+    # Статические методы
     # -------------------------------------------------------------------
     def gen_static_method_call(self, class_name: str, method_name: str, args: List[Expression]) -> ExprCode:
-        """Генерирует вызов статического метода класса.
-        ВСЕ методы классов в C++ всегда возвращают ely_value (for_signature=True),
-        поэтому НЕ оборачиваем результат в ely_value_new_*().
-        """
+        """Генерирует вызов статического метода класса."""
         cls = self.classes_ast.get(class_name)
         if not cls:
             return ExprCode("ely_value_new_null()", "ely_value", "any")
+            
         for sm in cls.static_methods:
             if sm.name == method_name:
                 args_code = [self.gen_expression(a) for a in args]
@@ -1475,8 +1420,8 @@ class FuncCodeGen(CodeGenUtils):
                     if i < len(sm.parameters):
                         expected = self.type_to_cpp(sm.parameters[i].type, is_param=True)
                         args_code[i] = self.ensure_type(arg, expected)
-                # Все методы классов генерируются с for_signature=True → всегда ely_value
                 ret_ely = sm.return_type or 'any'
                 call_code = f"{class_name}::{sm.name}({', '.join(a.code for a in args_code)})"
                 return ExprCode(call_code, "ely_value", ret_ely)
+                
         return ExprCode("ely_value_new_null()", "ely_value", "any")

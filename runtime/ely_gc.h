@@ -56,8 +56,6 @@ extern uintptr_t g_cage_base;
 extern uintptr_t g_cage_limit;
 
 void* cage_alloc_segment(size_t size);
-static void cage_decommit_segment(void* ptr, size_t size);
-static inline uint64_t ely_str_hash(const char* str);
 
 void gc_init_cage(size_t custom_size_bytes);
 
@@ -72,6 +70,7 @@ typedef enum ElyGCObjType {
     GC_OBJ_ARR,         /**< arr* – массив указателей на ely_value */
     GC_OBJ_DICT,        /**< dict* – словарь с ключами и значениями */
     GC_OBJ_STRING,      /**< char* – строка (не содержит указателей) */
+    GC_OBJ_DOUBLE
 } gc_obj_type_t;
 #endif
 
@@ -144,7 +143,7 @@ void gc_shutdown(void);
  */
 void* gc_alloc(size_t size, gc_obj_type_t type);
 
-static bool is_gc_managed(void* ptr);
+bool is_gc_managed(void* ptr);
 
 /**
  * @brief Выделяет блок памяти под управлением GC с инициализацией нулями.

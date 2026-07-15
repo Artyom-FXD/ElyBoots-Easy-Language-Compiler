@@ -327,14 +327,49 @@ class ProjectBuilder:
         print(f"  {TC.tag('OK')} Generated C++ bridge -> {out_cpp_path}")
 
         # --------------------------------------------------------------------
-        # ЭТАП 2. СОЗДАНИЕ КАТАЛОГА BUILD И ФАЙЛА ELYSOURCES.TXT ДЛЯ SVLM
+        # ЭТАП 2. СОЗДАНИЕ КАТАЛОГА BUILD И ДИНАМИЧЕСКОГО СПИСКА ELYSOURCES.TXT
         # --------------------------------------------------------------------
         elysources_path = self.build_dir / 'elysources.txt'
         try:
+            # Собираем всё, что SVLM должен скомпилировать и залинковать
+            svlm_payload = []
+            seen_paths = set()
+
+            def add_to_payload(p: Path):
+                abs_p = p.resolve()
+                if abs_p not in seen_paths:
+                    seen_paths.add(abs_p)
+                    svlm_payload.append(abs_p)
+
+            # 1. Добавляем сгенерированный C++ бридж
+            add_to_payload(out_cpp_path)
+
+            # 2. Сканируем папку build на наличие файлов рантайма (ely_runtime.c, ely_gc.c и т.д.)
+            if self.build_dir.exists():
+                for item in self.build_dir.iterdir():
+                    if item.is_file() and item.suffix.lower() in ('.c', '.cpp', '.cxx', '.cc'):
+                        add_to_payload(item)
+
+            # 3. Сканируем папку libs проекта на наличие нативных библиотек (.lib, .a, .dll, .so)
+            if self.libs_dir.exists():
+                for item in self.libs_dir.rglob('*'):
+                    if item.is_file() and item.suffix.lower() in ('.lib', '.a', '.dll', '.so'):
+                        add_to_payload(item)
+
+            # 4. Проверяем явные нативные исходники или либы, прописанные в manager.json
+            out_cfg = self.config.get('output', {})
+            native_sources = out_cfg.get('nativeSources', [])
+            for rel_path in native_sources:
+                native_path = (self.project_root / rel_path).resolve()
+                if native_path.exists() and native_path.is_file():
+                    add_to_payload(native_path)
+
+            # Записываем финальный очищенный список абсолютных путей
             with open(elysources_path, 'w', encoding='utf-8') as f:
-                for src in sources:
-                    f.write(f"{src.resolve()}\n")
-            print(f"  {TC.tag('OK')} Created list for SVLM -> {elysources_path}")
+                for path in svlm_payload:
+                    f.write(f"{path}\n")
+
+            print(f"  {TC.tag('OK')} Created dynamic manifest for SVLM ({len(svlm_payload)} files) -> {elysources_path}")
         except OSError as e:
             print(f"\n{TC.tag('ERROR')} Failed to write elysources.txt: {e}")
             return False

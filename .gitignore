@@ -22,7 +22,8 @@ build_nuitka/
 
 # CONFIG
 ely.json
-.vscode/
+.vscode/*
+.vscode/settings.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -232,3 +233,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+.vscode/settings.json
+/.vscode
+/.vscode

@@ -1,10 +1,17 @@
 #include "collections.h"
-#include "ely_runtime.h"   // Макросы ELY_PAYLOAD_MASK, ely_VALUE_STRING и анбоксинг
+
 #include <string.h>
 #include <stdarg.h>
 
-// Примечание: В твоих вызовах gc_alloc первым идет size, вторым – тип объекта.
-// Придерживаемся твоей сигнатуры: gc_alloc(size_t size, gc_obj_type_t type)
+#include "ely_value.h"
+
+#ifndef ELY_PAYLOAD_MASK
+#define ELY_PAYLOAD_MASK (~0x7ULL) 
+#endif
+
+#ifndef ELY_STR_DATA_SHIFT
+#define ELY_STR_DATA_SHIFT 8
+#endif
 
 // -------------------------------------------------------------------
 // ------------------------ arr (Динамический массив) ----------------
@@ -13,6 +20,7 @@
 arr* arr_new(void) {
     arr* a = (arr*)gc_alloc(sizeof(arr), GC_OBJ_ARR);
     if (!a) return NULL;
+    a->base.type = ELY_HEAP_ARRAY; // Инициализируем тип для рефлексии!
     a->data = NULL;
     a->size = 0;
     a->capacity = 0;
@@ -22,17 +30,16 @@ arr* arr_new(void) {
 static void arr_reserve(arr* a, size_t new_cap) {
     if (new_cap <= a->capacity) return;
     
-    // Выделяем плоский массив под uint64_t значения
-    ely_value* new_data = (ely_value*)gc_alloc(new_cap * sizeof(ely_value), GC_OBJ_ARR);
+    // Внутренний буфер — это "листовой" объект GC_OBJ_DOUBLE. Он не сканируется сам по себе!
+    ely_value* new_data = (ely_value*)gc_alloc(new_cap * sizeof(ely_value), GC_OBJ_DOUBLE);
     if (!new_data) return;
     
     if (a->data) {
-        // Копируем упакованные значения как есть
         memcpy(new_data, a->data, a->size * sizeof(ely_value));
     }
     
-    // Старый буфер a->data мы просто оставляем куче — GC сам его утилизирует
-    a->data = new_data;
+    // Записываем новый буфер через барьер записи на объекте `a`
+    gc_write_barrier(a, (void**)&a->data, new_data);
     a->capacity = new_cap;
 }
 
@@ -43,18 +50,23 @@ void arr_push(arr* a, ely_value elem) {
         arr_reserve(a, new_cap);
     }
     
-    // Если элемент содержит указатель на объект в куче, пишем через барьер
+    // Носителем барьера является родитель `a`, так как буфер `a->data` — листовой объект
     gc_write_barrier(a, (void**)&a->data[a->size], (void*)(uintptr_t)elem);
     a->size++;
 }
 
 ely_value arr_pop_value(arr* a) {
-    if (!a || a->size == 0) return 0; // Или твой дефолтный ELY_TAG_NULL
-    return a->data[--a->size];
+    if (!a || a->size == 0) return 0;
+    ely_value val = a->data[--a->size];
+    a->data[a->size] = 0; // Чистим за собой ссылку, чтобы GC не держал старый объект в памяти
+    return val;
 }
 
 void arr_pop(arr* a) {
-    if (a && a->size > 0) a->size--;
+    if (a && a->size > 0) {
+        a->size--;
+        a->data[a->size] = 0; // Стираем ссылку
+    }
 }
 
 ely_value arr_get(arr* a, size_t index) {
@@ -71,27 +83,25 @@ size_t arr_len(arr* a) {
     return a ? a->size : 0;
 }
 
-int arr_remove_value(arr* a, ely_value value) {
-    if (!a || a->size == 0) return -1;
-    for (size_t i = 0; i < a->size; i++) {
-        if (a->data[i] == value) { // Прямое побитовое сравнение 64-битных боксов!
-            for (size_t j = i; j < a->size - 1; j++) {
-                a->data[j] = a->data[j+1];
-            }
-            a->size--;
-            return 0;
-        }
-    }
-    return -1;
-}
-
 int arr_remove_index(arr* a, size_t index) {
     if (!a || index >= a->size) return -1;
     for (size_t j = index; j < a->size - 1; j++) {
-        a->data[j] = a->data[j+1];
+        // Запись через барьер, так как мы сдвигаем потенциальные ссылки в куче
+        gc_write_barrier(a, (void**)&a->data[j], (void*)(uintptr_t)a->data[j+1]);
     }
     a->size--;
+    a->data[a->size] = 0; // Обнуляем хвост
     return 0;
+}
+
+int arr_remove_value(arr* a, ely_value value) {
+    if (!a || a->size == 0) return -1;
+    for (size_t i = 0; i < a->size; i++) {
+        if (a->data[i] == value) { 
+            return arr_remove_index(a, i);
+        }
+    }
+    return -1;
 }
 
 int arr_insert(arr* a, size_t index, ely_value elem) {
@@ -101,7 +111,7 @@ int arr_insert(arr* a, size_t index, ely_value elem) {
         arr_reserve(a, new_cap);
     }
     for (size_t j = a->size; j > index; j--) {
-        a->data[j] = a->data[j-1];
+        gc_write_barrier(a, (void**)&a->data[j], (void*)(uintptr_t)a->data[j-1]);
     }
     gc_write_barrier(a, (void**)&a->data[index], (void*)(uintptr_t)elem);
     a->size++;
@@ -135,7 +145,6 @@ arr* arr_make(size_t count, ...) {
     va_list args;
     va_start(args, count);
     for (size_t i = 0; i < count; i++) {
-        // Извлекаем упакованный 64-битный бокс ely_value из вариативного списка
         ely_value elem = va_arg(args, ely_value);
         arr_push(a, elem);
     }
@@ -150,7 +159,6 @@ arr* arr_make(size_t count, ...) {
 // -------------------------------------------------------------------
 
 static unsigned int default_hash(ely_value key) {
-    // key теперь uint64_t. Используем классический 64-битный микс-хеш Томаса Ванга
     key = (~key) + (key << 21);
     key = key ^ (key >> 24);
     key = (key + (key << 3)) + (key << 8);
@@ -168,8 +176,10 @@ static int default_cmp(ely_value a, ely_value b) {
 dict* dict_new(unsigned int (*hash)(ely_value), int (*key_cmp)(ely_value, ely_value)) {
     dict* d = (dict*)gc_alloc(sizeof(dict), GC_OBJ_DICT);
     if (!d) return NULL;
+    d->base.type = ELY_HEAP_DICT; // Инициализируем тип для рефлексии!
     d->capacity = 16;
-    d->buckets = (dict_entry**)gc_alloc(d->capacity * sizeof(dict_entry*), GC_OBJ_DICT);
+    
+    d->buckets = (dict_entry**)gc_alloc(d->capacity * sizeof(dict_entry*), GC_OBJ_DOUBLE);
     if (!d->buckets) return NULL;
     
     memset(d->buckets, 0, d->capacity * sizeof(dict_entry*));
@@ -181,7 +191,9 @@ dict* dict_new(unsigned int (*hash)(ely_value), int (*key_cmp)(ely_value, ely_va
 
 static void dict_resize(dict* d, size_t new_cap) {
     if (new_cap < d->size) return;
-    dict_entry** new_buckets = (dict_entry**)gc_alloc(new_cap * sizeof(dict_entry*), GC_OBJ_DICT);
+    
+    // Новый буфер бакетов также делаем плоским GC_OBJ_DOUBLE
+    dict_entry** new_buckets = (dict_entry**)gc_alloc(new_cap * sizeof(dict_entry*), GC_OBJ_DOUBLE);
     if (!new_buckets) return;
     memset(new_buckets, 0, new_cap * sizeof(dict_entry*));
 
@@ -191,15 +203,16 @@ static void dict_resize(dict* d, size_t new_cap) {
             dict_entry* next = e->next;
             size_t idx = d->hash(e->key) % new_cap;
             
-            // Связываем ноду в новом бакете через барьер записи
-            gc_write_barrier(e, (void**)&e->next, new_buckets[idx]);
+            // В барьер передаем родителя `d`!
+            gc_write_barrier(d, (void**)&e->next, new_buckets[idx]);
             new_buckets[idx] = e;
             
             e = next;
         }
     }
-    // Старые бакеты d->buckets уходят на съедение GC
-    d->buckets = new_buckets;
+    
+    // Перезаписываем бакеты в родителе `d`
+    gc_write_barrier(d, (void**)&d->buckets, new_buckets);
     d->capacity = new_cap;
 }
 
@@ -213,21 +226,21 @@ void dict_set(dict* d, ely_value key, ely_value value) {
     
     while (e) {
         if (d->key_cmp(e->key, key) == 0) {
-            gc_write_barrier(e, (void**)&e->value, (void*)(uintptr_t)value);
+            // Барьер на `d`, так как `e` — листовой объект кучи
+            gc_write_barrier(d, (void**)&e->value, (void*)(uintptr_t)value);
             return;
         }
         e = e->next;
     }
     
-    // Создаем новую ноду коллизии прямо в GC куче
-    e = (dict_entry*)gc_alloc(sizeof(dict_entry), GC_OBJ_DICT);
+    // Нода коллизии тоже выделяется как GC_OBJ_DOUBLE!
+    e = (dict_entry*)gc_alloc(sizeof(dict_entry), GC_OBJ_DOUBLE);
     if (!e) return;
     
-    e->key = key; // Ключ пишется при инициализации
-    gc_write_barrier(e, (void**)&e->value, (void*)(uintptr_t)value);
-    gc_write_barrier(e, (void**)&e->next, d->buckets[idx]);
+    e->key = key; 
+    gc_write_barrier(d, (void**)&e->value, (void*)(uintptr_t)value);
+    gc_write_barrier(d, (void**)&e->next, d->buckets[idx]);
     
-    // Обновляем указатель в массиве бакетов
     gc_write_barrier(d, (void**)&d->buckets[idx], e);
     d->size++;
 }
@@ -257,11 +270,10 @@ int dict_delete(dict* d, ely_value key) {
     while (e) {
         if (d->key_cmp(e->key, key) == 0) {
             if (prev) {
-                gc_write_barrier(prev, (void**)&prev->next, e->next);
+                gc_write_barrier(d, (void**)&prev->next, e->next);
             } else {
                 gc_write_barrier(d, (void**)&d->buckets[idx], e->next);
             }
-            // Нода e больше никем не видима, её прибьет GC. Ручной free(e) удален!
             d->size--;
             return 0;
         }
@@ -280,11 +292,9 @@ size_t dict_size(dict* d) {
 // -------------------------------------------------------------------
 
 unsigned int dict_hash_str(ely_value key) {
-    // 1: immediate str
     if (ely_is_immediate_str(key)) {
         size_t len = ely_immediate_str_len(key);
         unsigned int hash = 5381;
-        
         for (size_t i = 0; i < len; i++) {
             int c = (char)((key >> (ELY_STR_DATA_SHIFT + (i * 8))) & 0xFF);
             hash = ((hash << 5) + hash) + c;
@@ -292,20 +302,20 @@ unsigned int dict_hash_str(ely_value key) {
         return hash;
     }
 
-    // 2: str in heap
-    if ((key >> 56) == ely_VALUE_STRING) {
-        char* str = (char*)(uintptr_t)(key & ELY_PAYLOAD_MASK);
-        if (!str) return 0;
-        
-        unsigned int hash = 5381;
-        int c;
-        while ((c = (unsigned char)*str++)) {
-            hash = ((hash << 5) + hash) + c;
+    if (ely_is_ptr(key)) {
+        ElyHeapObject* obj = (ElyHeapObject*)ely_as_ptr(key);
+        if (obj && obj->type == ELY_HEAP_STRING) {
+            char* str = ((ElyHeapString*)obj)->data;
+            unsigned int hash = 5381;
+            int c;
+            while ((c = (unsigned char)*str++)) {
+                hash = ((hash << 5) + hash) + c;
+            }
+            return hash;
         }
-        return hash;
     }
 
-    return 0; // Не строка
+    return 0; 
 }
 
 int dict_cmp_str(ely_value a, ely_value b) {
@@ -316,27 +326,29 @@ int dict_cmp_str(ely_value a, ely_value b) {
 
     char buf_a[8];
     char buf_b[8];
-    char* str_a;
-    char* str_b;
+    const char* str_a = NULL;
+    const char* str_b = NULL;
 
     if (a_imm) {
         ely_immediate_str_get_chars(a, buf_a);
         str_a = buf_a;
-    } else if ((a >> 56) == ely_VALUE_STRING) {
-        str_a = (char*)(uintptr_t)(a & ELY_PAYLOAD_MASK);
-    } else {
-        return 1;
+    } else if (ely_is_ptr(a)) {
+        ElyHeapObject* obj = (ElyHeapObject*)ely_as_ptr(a);
+        if (obj && obj->type == ELY_HEAP_STRING) {
+            str_a = ((ElyHeapString*)obj)->data;
+        }
     }
 
     if (b_imm) {
         ely_immediate_str_get_chars(b, buf_b);
         str_b = buf_b;
-    } else if ((b >> 56) == ely_VALUE_STRING) {
-        str_b = (char*)(uintptr_t)(b & ELY_PAYLOAD_MASK);
-    } else {
-        return 1;
+    } else if (ely_is_ptr(b)) {
+        ElyHeapObject* obj = (ElyHeapObject*)ely_as_ptr(b);
+        if (obj && obj->type == ELY_HEAP_STRING) {
+            str_b = ((ElyHeapString*)obj)->data;
+        }
     }
 
-    if (!str_a || !str_b) return 1;
+    if (!str_a || !str_b) return 1; // Разные или некорректные типы
     return strcmp(str_a, str_b);
 }
