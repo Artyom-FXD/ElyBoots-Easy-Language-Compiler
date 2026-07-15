@@ -22,6 +22,7 @@ build_nuitka/
 
 # CONFIG
 ely.json
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
