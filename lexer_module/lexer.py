@@ -20,67 +20,67 @@ class Lexer:
             'cppCode': TokenType.CPPCODE,
             'using': TokenType.USING,
             'class': TokenType.CLASS,
-            'struct': TokenType.STRUCT,
+            'struct': TokenType.STRUCT, 
             'type': TokenType.TYPE,
-            'namespace': TokenType.NAMESPACE,
-            'extern': TokenType.EXTERN,
+            'namespace': TokenType.NAMESPACE, 
+            'extern': TokenType.EXTERN, 
             'const': TokenType.CONST,
-            'static': TokenType.STATIC,
-            'void': TokenType.VOID,
+            'static': TokenType.STATIC, 
+            'void': TokenType.VOID, 
             'func': TokenType.FUNC,
-            'giveback': TokenType.GIVEBACK,
-            'return': TokenType.RETURN,
+            'giveback': TokenType.GIVEBACK, 
+            'return': TokenType.RETURN, 
             'if': TokenType.IF,
-            'else': TokenType.ELSE,
-            'match': TokenType.MATCH,
+            'else': TokenType.ELSE, 
+            'match': TokenType.MATCH, 
             'case': TokenType.CASE,
-            'default': TokenType.DEFAULT,
-            'break': TokenType.BREAK,
+            'default': TokenType.DEFAULT, 
+            'break': TokenType.BREAK, 
             'asafe': TokenType.ASAFE,
-            'throw': TokenType.THROW,
-            'except': TokenType.EXCEPT,
+            'throw': TokenType.THROW, 
+            'except': TokenType.EXCEPT, 
             'new': TokenType.NEW,
-            'delete': TokenType.DELETE,
-            'in': TokenType.IN,
+            'delete': TokenType.DELETE, 
+            'in': TokenType.IN, 
             'is': TokenType.IS,
-            'not': TokenType.NOT,
-            'public': TokenType.PUBLIC,
+            'not': TokenType.NOT, 
+            'public': TokenType.PUBLIC, 
             'private': TokenType.PRIVATE,
-            'collapse': TokenType.COLLAPSE,
-            'int': TokenType.INT,
+            'collapse': TokenType.COLLAPSE, 
+            'int': TokenType.INT, 
             'uint': TokenType.UINT,
-            'more': TokenType.MORE,
-            'umore': TokenType.UMORE,
+            'more': TokenType.MORE, 
+            'umore': TokenType.UMORE, 
             'flt': TokenType.FLT,
-            'double': TokenType.DOUBLE,
-            'noised': TokenType.NOISED,
+            'double': TokenType.DOUBLE, 
+            'noised': TokenType.NOISED, 
             'str': TokenType.STR,
-            'char': TokenType.CHAR,
-            'bool': TokenType.BOOL,
+            'char': TokenType.CHAR, 
+            'bool': TokenType.BOOL, 
             'byte': TokenType.BYTE,
-            'ubyte': TokenType.UBYTE,
-            'any': TokenType.ANY,
+            'ubyte': TokenType.UBYTE, 
+            'any': TokenType.ANY, 
             'true': TokenType.BOOLEAN,
-            'false': TokenType.BOOLEAN,
-            'NULL': TokenType.NULL,
+            'false': TokenType.BOOLEAN, 
+            'NULL': TokenType.NULL, 
             'for': TokenType.FOR,
-            'while': TokenType.WHILE,
-            'foreach': TokenType.FOREACH,
+            'while': TokenType.WHILE, 
+            'foreach': TokenType.FOREACH, 
             'interface': TokenType.INTERFACE,
-            'impl': TokenType.IMPL,
-            'override': TokenType.OVERRIDE,
+            'impl': TokenType.IMPL, 
+            'override': TokenType.OVERRIDE, 
             'abstract': TokenType.ABSTRACT,
-            'sealed': TokenType.SEALED,
-            'async': TokenType.ASYNC,
+            'sealed': TokenType.SEALED, 
+            'async': TokenType.ASYNC, 
             'await': TokenType.AWAIT,
-            'sizeof': TokenType.SIZEOF,
-            'typeof': TokenType.TYPEOF,
+            'sizeof': TokenType.SIZEOF, 
+            'typeof': TokenType.TYPEOF, 
             'as': TokenType.AS,
-            'arr': TokenType.ARRAY,
-            'dict': TokenType.DICT,
+            'arr': TokenType.ARRAY, 
+            'dict': TokenType.DICT, 
             'generic': TokenType.GENERIC,
-            'fields': TokenType.FIELDS,
-            'methods': TokenType.METHODS,
+            'fields': TokenType.FIELDS, 
+            'methods': TokenType.METHODS, 
             'wait': TokenType.WAIT,
             'super': TokenType.SUPER,
         }
@@ -97,16 +97,24 @@ class Lexer:
         """
         self.debug = debug
         self.tokens = []
+        src_len = len(self.source)
 
-        while self.pos < len(self.source):
+        while self.pos < src_len:
             self._skip_whitespace()
-            if self.pos >= len(self.source):
+            if self.pos >= src_len:
                 break
 
             if self._skip_comment():
                 continue
 
             ch = self.source[self.pos]
+
+            # Macro Identifier style 1: @macro_name
+            if ch == '@':
+                next_ch = self._peek(1)
+                if next_ch and (next_ch.isalpha() or next_ch == '_'):
+                    self._read_macro_directive()
+                    continue
 
             # Multiline f-string: f"""..."""
             if (ch == 'f' or ch == 'F') and self._peek(1) == '"' and self._peek(2) == '"' and self._peek(3) == '"':
@@ -122,26 +130,24 @@ class Lexer:
             # Single-line f-string: f"..." or f'...'
             if (ch == 'f' or ch == 'F') and (self._peek(1) == '"' or self._peek(1) == "'"):
                 self._advance()  # consume 'f'
-                self._read_fstring(self._peek())  # pass the quote char
+                self._read_fstring(self._peek())
                 continue
 
-            # cCode block
-            if self.source[self.pos:self.pos+5] == 'cCode':
+            # Raw C/C++ blocks optimization: check first char before slicing
+            if ch == 'c' and self.pos + 5 <= src_len and self.source[self.pos:self.pos+5] == 'cCode':
                 next_ch = self._peek(5)
-                # Проверяем, не является ли это частью идентификатора (например, cCode_var)
                 if next_ch and (next_ch.isalnum() or next_ch == '_'):
                     self._read_identifier_or_keyword()
-                    continue
-                self._read_c_code()
+                else:
+                    self._read_c_code()
                 continue
 
-            # cppCode block
-            if self.source[self.pos:self.pos+7] == 'cppCode':
+            if ch == 'c' and self.pos + 7 <= src_len and self.source[self.pos:self.pos+7] == 'cppCode':
                 next_ch = self._peek(7)
                 if next_ch and (next_ch.isalnum() or next_ch == '_'):
                     self._read_identifier_or_keyword()
-                    continue
-                self._read_cpp_code()
+                else:
+                    self._read_cpp_code()
                 continue
 
             if ch.isalpha() or ch == '_':
@@ -226,7 +232,7 @@ class Lexer:
         if self._peek() == '/' and self._peek(1) == '*':
             self._advance()
             self._advance()
-            closed = False  # ФИКС: контроль закрытия комментария
+            closed = False
             while self.pos < len(self.source):
                 if self.source[self.pos] == '*' and self._peek(1) == '/':
                     self._advance()
@@ -258,6 +264,19 @@ class Lexer:
         """
         raise SyntaxError(f"Unterminated {context} at line {self.line}, column {self.col}")
 
+    def _read_macro_directive(self):
+        """ Reads @macro_name style macros """
+        start_col = self.col
+        start_pos = self.pos
+        self._advance()
+        
+        while self.pos < len(self.source) and (self.source[self.pos].isalnum() or self.source[self.pos] == '_'):
+            self._advance()
+            
+        lexeme = self.source[start_pos:self.pos]
+        macro_name = lexeme[1:]
+        self._add_token(TokenType.MACRO_IDENTIFIER, lexeme, self.line, start_col, value=macro_name)
+
     def _read_identifier_or_keyword(self):
         """
         Read an identifier or keyword and emit the corresponding token.
@@ -266,9 +285,19 @@ class Lexer:
         """
         start_col = self.col
         start_pos = self.pos
+        
         while self.pos < len(self.source) and (self.source[self.pos].isalnum() or self.source[self.pos] == '_'):
             self._advance()
+            
         lexeme = self.source[start_pos:self.pos]
+        
+        # Check for macro call style: identifier! (but NOT identifier!=)
+        if self._peek() == '!' and self._peek(1) != '=':
+            self._advance()  # Consume '!'
+            full_lexeme = self.source[start_pos:self.pos]
+            self._add_token(TokenType.MACRO_IDENTIFIER, full_lexeme, self.line, start_col, value=lexeme)
+            return
+
         token_type = self.keywords.get(lexeme, TokenType.IDENTIFIER)
         self._add_token(token_type, lexeme, self.line, start_col)
 
@@ -281,28 +310,25 @@ class Lexer:
         
         if self.source[self.pos] == '0' and self.pos + 1 < len(self.source):
             next_ch = self.source[self.pos + 1].lower()
-            
             if next_ch == 'x':
-                self._advance() # 0
-                self._advance() # x
+                self._advance()
+                self._advance()
                 while self.pos < len(self.source) and (self.source[self.pos].isdigit() or self.source[self.pos].lower() in 'abcdef'):
                     self._advance()
                 lexeme = self.source[start_pos:self.pos]
                 self._add_token(TokenType.NUMBER, lexeme, self.line, start_col, int(lexeme, 16))
                 return
-                
             elif next_ch == 'b':
-                self._advance() # 0
-                self._advance() # b
+                self._advance()
+                self._advance()
                 while self.pos < len(self.source) and self.source[self.pos] in '01':
                     self._advance()
                 lexeme = self.source[start_pos:self.pos]
                 self._add_token(TokenType.NUMBER, lexeme, self.line, start_col, int(lexeme, 2))
                 return
-                
             elif next_ch == 'o':
-                self._advance() # 0
-                self._advance() # o
+                self._advance()
+                self._advance()
                 while self.pos < len(self.source) and self.source[self.pos] in '01234567':
                     self._advance()
                 lexeme = self.source[start_pos:self.pos]
@@ -313,42 +339,26 @@ class Lexer:
             self._advance()
             
         if self._peek() == '.' and self._peek(1) and self._peek(1).isdigit():
-            self._advance() # .
+            self._advance()
             while self.pos < len(self.source) and self.source[self.pos].isdigit():
                 self._advance()
                 
         if self._peek() in ('e', 'E'):
             next_1 = self._peek(1)
             next_2 = self._peek(2)
-            is_valid_exp = False
-            
-            if next_1 and next_1.isdigit():
-                is_valid_exp = True
-            elif next_1 in ('+', '-') and next_2 and next_2.isdigit():
-                is_valid_exp = True
-                
+            is_valid_exp = (next_1 and next_1.isdigit()) or (next_1 in ('+', '-') and next_2 and next_2.isdigit())
             if is_valid_exp:
-                self._advance()  # e / E
+                self._advance()
                 if self._peek() in ('+', '-'):
                     self._advance()
                 while self.pos < len(self.source) and self.source[self.pos].isdigit():
                     self._advance()
                     
         lexeme = self.source[start_pos:self.pos]
-        
-        if '.' in lexeme or 'e' in lexeme or 'E' in lexeme:
-            value = float(lexeme)
-        else:
-            value = int(lexeme)
-            
+        value = float(lexeme) if ('.' in lexeme or 'e' in lexeme or 'E' in lexeme) else int(lexeme)
         self._add_token(TokenType.NUMBER, lexeme, self.line, start_col, value)
 
     def _read_string(self):
-        """
-        Read a double-quoted string literal and emit a STRING token.
-
-        Читает строковой литерал в двойных кавычках и выдаёт токен STRING.
-        """
         start_col = self.col
         start_pos = self.pos
         self._advance()
@@ -358,20 +368,9 @@ class Lexer:
 
         while self.pos < len(self.source):
             ch = self.source[self.pos]
-
             if escaped:
-                if ch == 'n':
-                    chars.append('\n')
-                elif ch == 't':
-                    chars.append('\t')
-                elif ch == 'r':
-                    chars.append('\r')
-                elif ch == '"':
-                    chars.append('"')
-                elif ch == '\\':
-                    chars.append('\\')
-                else:
-                    chars.append('\\' + ch)
+                escape_map = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\'}
+                chars.append(escape_map.get(ch, '\\' + ch))
                 escaped = False
                 self._advance()
                 continue
@@ -391,181 +390,113 @@ class Lexer:
             self._error("string literal")
 
         raw_lexeme = self.source[start_pos:self.pos]
-        value = ''.join(chars)
-        self._add_token(TokenType.STRING, raw_lexeme, self.line, start_col, value)
+        self._add_token(TokenType.STRING, raw_lexeme, self.line, start_col, ''.join(chars))
 
-    def _read_fstring(self, quote_char):
-        """
-        Read a single-line f-string literal (f"..." or f'...') and emit an FSTRING token.
-        """
+    def _read_multiline_string(self):
         start_line = self.line
         start_col = self.col
         start_pos = self.pos
         
-        # Кавычка (quote_char) передана из tokenize(), поглощаем её
+        self._advance()  # "
+        self._advance()  # "
+        self._advance()  # "
+
+        content_start = self.pos
+        while self.pos < len(self.source):
+            if self.source[self.pos] == '"' and self._peek(1) == '"' and self._peek(2) == '"':
+                content_end = self.pos
+                self._advance()
+                self._advance()
+                self._advance()
+                break
+            self._advance()
+        else:
+            self._error("multiline string")
+
+        content = self.source[content_start:content_end]
+        self._add_token(TokenType.MULTILINE_STRING, self.source[start_pos:self.pos], start_line, start_col, value=content)
+
+    def _read_fstring(self, quote_char):
+        start_line = self.line
+        start_col = self.col
+        start_pos = self.pos
         self._advance() 
 
         content_start = self.pos
         depth = 0
         escaped = False
-        content_end = self.pos
 
         while self.pos < len(self.source):
             ch = self.source[self.pos]
-
             if escaped:
                 escaped = False
                 self._advance()
                 continue
-
             if ch == '\\':
                 escaped = True
                 self._advance()
                 continue
-
             if ch == '\n':
                 self._error("unterminated f-string literal")
-
             if ch == '{':
                 depth += 1
-                self._advance()
-                continue
             elif ch == '}':
                 depth -= 1
-                self._advance()
-                continue
-
-            # Используем переданный quote_char для проверки закрытия строки
             if ch == quote_char and depth == 0:
                 content_end = self.pos
                 self._advance()
                 break
-                
             self._advance()
         else:
             self._error("f-string")
 
-        content = self.source[content_start:content_end]
-        raw_lexeme = self.source[start_pos:self.pos]
-        self._add_token(TokenType.FSTRING, raw_lexeme, start_line, start_col, value=content)
+        self._add_token(TokenType.FSTRING, self.source[start_pos:self.pos], start_line, start_col, value=self.source[content_start:content_end])
 
     def _read_multiline_fstring(self):
-        """
-        Read a multiline f-string literal (f\"\"\"...\"\"\") and emit an FSTRING_MULTILINE token.
-        """
         start_line = self.line
         start_col = self.col
         start_pos = self.pos
         
-        self._advance()  # "
-        self._advance()  # "
-        self._advance()  # "
+        self._advance()
+        self._advance()
+        self._advance()
 
         content_start = self.pos
         depth = 0
         escaped = False
-        content_end = self.pos
 
         while self.pos < len(self.source):
             ch = self.source[self.pos]
-
             if escaped:
                 escaped = False
                 self._advance()
                 continue
-
             if ch == '\\':
                 escaped = True
                 self._advance()
                 continue
-
             if ch == '{':
                 depth += 1
-                self._advance()
-                continue
             elif ch == '}':
                 depth -= 1
-                self._advance()
-                continue
-
-            if ch == '"' and self.pos + 2 < len(self.source) and \
-               self.source[self.pos+1] == '"' and self.source[self.pos+2] == '"' and depth == 0:
+            if ch == '"' and self._peek(1) == '"' and self._peek(2) == '"' and depth == 0:
                 content_end = self.pos
                 self._advance()
                 self._advance()
                 self._advance()
                 break
-            
             self._advance()
         else:
             self._error("multiline f-string")
 
-        content = self.source[content_start:content_end]
-        raw_lexeme = self.source[start_pos:self.pos]
-        
-        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, start_line, start_col, value=content)
-
-    def _read_multiline_fstring(self):
-        """
-        Read a multiline f-string literal (f\"\"\"...\"\"\") and emit an FSTRING_MULTILINE token.
-        """
-        start_line = self.line
-        start_col = self.col
-        start_pos = self.pos
-        
-        self._advance()  # first quote
-        self._advance()  # second quote
-        self._advance()  # third quote
-
-        content_start = self.pos
-        depth = 0
-        escaped = False
-        content_end = self.pos
-
-        while self.pos < len(self.source):
-            ch = self.source[self.pos]
-
-            if escaped:
-                escaped = False
-                self._advance()
-                continue
-
-            if ch == '\\':
-                escaped = True
-                self._advance()
-                continue
-
-            if ch == '{':
-                depth += 1
-                self._advance()
-                continue
-            elif ch == '}':
-                depth -= 1
-                self._advance()
-                continue
-
-            if ch == '"' and self.pos + 2 < len(self.source) and \
-               self.source[self.pos+1] == '"' and self.source[self.pos+2] == '"' and depth == 0:
-                content_end = self.pos
-                self._advance()  # first quote
-                self._advance()  # second quote
-                self._advance()  # third quote
-                break
-            
-            self._advance()
-        else:
-            self._error("multiline f-string")
-
-        content = self.source[content_start:content_end]
-        raw_lexeme = self.source[start_pos:self.pos]
-        self._add_token(TokenType.FSTRING_MULTILINE, raw_lexeme, start_line, start_col, value=content)
+        self._add_token(TokenType.FSTRING_MULTILINE, self.source[start_pos:self.pos], start_line, start_col, value=self.source[content_start:content_end])
 
     def _read_c_code(self):
         """
         Read a cCode { ... } block and emit a CCODE token with the raw code as value.
         """
         self._skip_whitespace()
-        self.pos += 5  # skip 'cCode'
+        self.pos += 5
         self.col += 5
         self._skip_whitespace()
         line = self.line
@@ -573,43 +504,29 @@ class Lexer:
         if self.pos >= len(self.source) or self.source[self.pos] != '{':
             self._add_unknown_token()
             return
-        self._advance()  # consume '{'
+        self._advance()
         brace_depth = 1
         content_start = self.pos
         
         while self.pos < len(self.source) and brace_depth > 0:
             ch = self.source[self.pos]
-            
             if ch == '/' and self._peek(1) == '/':
-                self._advance()
-                self._advance()
-                while self.pos < len(self.source) and self.source[self.pos] != '\n':
-                    self._advance()
+                self._advance(); self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != '\n': self._advance()
                 continue
-                
             if ch == '/' and self._peek(1) == '*':
-                self._advance()
-                self._advance()
+                self._advance(); self._advance()
                 while self.pos < len(self.source):
                     if self.source[self.pos] == '*' and self._peek(1) == '/':
-                        self._advance()
-                        self._advance()
+                        self._advance(); self._advance()
                         break
                     self._advance()
                 continue
-
-            if ch == '"':
+            if ch == '"' or ch == "'":
+                q = ch
                 self._advance()
-                while self.pos < len(self.source) and self.source[self.pos] != '"':
-                    if self.source[self.pos] == '\\':
-                        self._advance()
-                    self._advance()
-                self._advance()
-            elif ch == "'":
-                self._advance()
-                while self.pos < len(self.source) and self.source[self.pos] != "'":
-                    if self.source[self.pos] == '\\':
-                        self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != q:
+                    if self.source[self.pos] == '\\': self._advance()
                     self._advance()
                 self._advance()
             elif ch == '{':
@@ -618,8 +535,7 @@ class Lexer:
             elif ch == '}':
                 brace_depth -= 1
                 self._advance()
-                if brace_depth == 0:
-                    break
+                if brace_depth == 0: break
             else:
                 self._advance()
                 
@@ -636,7 +552,7 @@ class Lexer:
         Читает блок cppCode { ... } и выдаёт токен CPPCODE, сохраняя сырой код как значение.
         """
         self._skip_whitespace()
-        self.pos += 7  # skip 'cppCode'
+        self.pos += 7
         self.col += 7
         self._skip_whitespace()
         line = self.line
@@ -644,23 +560,16 @@ class Lexer:
         if self.pos >= len(self.source) or self.source[self.pos] != '{':
             self._add_unknown_token()
             return
-        self._advance()  # consume '{'
+        self._advance()
         brace_depth = 1
         content_start = self.pos
         while self.pos < len(self.source) and brace_depth > 0:
             ch = self.source[self.pos]
-            if ch == '"':
+            if ch == '"' or ch == "'":
+                q = ch
                 self._advance()
-                while self.pos < len(self.source) and self.source[self.pos] != '"':
-                    if self.source[self.pos] == '\\':
-                        self._advance()
-                    self._advance()
-                self._advance()
-            elif ch == "'":
-                self._advance()
-                while self.pos < len(self.source) and self.source[self.pos] != "'":
-                    if self.source[self.pos] == '\\':
-                        self._advance()
+                while self.pos < len(self.source) and self.source[self.pos] != q:
+                    if self.source[self.pos] == '\\': self._advance()
                     self._advance()
                 self._advance()
             elif ch == '{':
@@ -669,8 +578,7 @@ class Lexer:
             elif ch == '}':
                 brace_depth -= 1
                 self._advance()
-                if brace_depth == 0:
-                    break
+                if brace_depth == 0: break
             else:
                 self._advance()
         if brace_depth != 0:
@@ -692,11 +600,7 @@ class Lexer:
             start_col = self.col
             self._advance()
             self._advance()
-            try:
-                token_type = TokenType(two_chars)
-            except ValueError:
-                return False
-            self._add_token(token_type, two_chars, self.line, start_col)
+            self._add_token(TokenType(two_chars), two_chars, self.line, start_col)
             return True
         return False
 
@@ -716,9 +620,6 @@ class Lexer:
             token_type = TokenType(ch)
         except ValueError:
             return False
-        self._advance()
-        self._add_token(token_type, ch, self.line, start_col)
-        return True
 
     def _add_unknown_token(self):
         """

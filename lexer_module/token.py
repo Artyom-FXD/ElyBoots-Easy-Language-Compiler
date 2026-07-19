@@ -73,6 +73,7 @@ class TokenType(Enum):
     WHILE = 'while'
 
     IDENTIFIER = 'identifier'
+    MACRO_IDENTIFIER = 'macro_identifier'  # Специальный токен для препроцессора
     NUMBER = 'number'
     STRING = 'string'
     BOOLEAN = 'boolean'
@@ -93,7 +94,7 @@ class TokenType(Enum):
     LESS = '<'
     LESS_EQUAL = '<='
     GREATER = '>'
-    GREATER_EQUAL = '>='
+    GREATER_EQUAL = Rhine = '>='
     LOGICAL_AND = '&&'
     LOGICAL_OR = '||'
     LOGICAL_NOT = '!'
