@@ -59,8 +59,9 @@ from .dtcs import (
     AwaitExpression,
     ExprCode,
 )
-from .parser import Parser
+# from .parser import Parser // Now we use EarleyParser
 from .semantic_analyser import SemanticError, Symbol, Scope, SemanticAnalyzer
+from .coreparse import Parser
 
 __all__ = [
     "Parser",

@@ -1,19 +1,10 @@
 from enum import Enum
 from typing import Any
 
-
 class TokenType(Enum):
     """
     Enumerates all recognised token types in the Ely language lexer.
-
-    Covers keywords, literals, operators, delimiters, and special tokens
-    (EOF, UNKNOWN). Each member's value is the corresponding source string.
-
-    Перечисление всех распознаваемых типов токенов лексера языка Ely.
-    Включает ключевые слова, литералы, операторы, разделители и
-    специальные токены (EOF, UNKNOWN). Значение элемента — строка источника.
     """
-
     USING = 'using'
     CLASS = 'class'
     STRUCT = 'struct'
@@ -73,7 +64,7 @@ class TokenType(Enum):
     WHILE = 'while'
 
     IDENTIFIER = 'identifier'
-    MACRO_IDENTIFIER = 'macro_identifier'  # Специальный токен для препроцессора
+    MACRO_IDENTIFIER = 'macro_identifier'
     NUMBER = 'number'
     STRING = 'string'
     BOOLEAN = 'boolean'
@@ -94,7 +85,7 @@ class TokenType(Enum):
     LESS = '<'
     LESS_EQUAL = '<='
     GREATER = '>'
-    GREATER_EQUAL = Rhine = '>='
+    GREATER_EQUAL = '>='  # Исправлена опечатка (Rhine)
     LOGICAL_AND = '&&'
     LOGICAL_OR = '||'
     LOGICAL_NOT = '!'
@@ -135,35 +126,7 @@ class TokenType(Enum):
 
 
 class Token:
-    """
-    Represents a single lexical token produced by the lexer.
-
-    Stores the token type, the source lexeme, source position (line, column),
-    and an optional computed value (e.g. the parsed numeric value of a NUMBER token).
-
-    Представляет один лексический токен, созданный лексером.
-    Хранит тип токена, лексему из исходного кода, позицию в исходнике
-    (строка, колонка) и опциональное вычисленное значение
-    (например, разобранное числовое значение для NUMBER).
-    """
-
     def __init__(self, ttype: TokenType, lexeme: str, line: int, column: int, value: Any = None):
-        """
-        Initialise a Token instance.
-
-        :param ttype:  The token type.
-        :param lexeme: The raw source string matched for this token.
-        :param line:   Line number in the source (1‑based).
-        :param column: Column number in the source (1‑based).
-        :param value:  Optional parsed value (e.g. the numeric or string value).
-
-        Инициализирует экземпляр Token.
-        :param ttype:  Тип токена.
-        :param lexeme: Исходная строка, совпавшая с токеном.
-        :param line:   Номер строки в исходнике (начиная с 1).
-        :param column: Номер колонки в исходнике (начиная с 1).
-        :param value:  Опциональное разобранное значение (например, число или строка).
-        """
         self.type = ttype
         self.lexeme = lexeme
         self.line = line
@@ -171,12 +134,4 @@ class Token:
         self.value = value
 
     def __repr__(self):
-        """
-        Return a debug-friendly string representation of the token.
-
-        :returns: A formatted string showing the token type, lexeme, position, and value.
-
-        Возвращает отладочное строковое представление токена.
-        :returns: Форматированная строка с типом, лексемой, позицией и значением.
-        """
         return f"Token({self.type.name}, {self.lexeme!r}, line={self.line}, col={self.col}, value={self.value})"
