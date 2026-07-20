@@ -105,6 +105,7 @@ class TokenType(Enum):
     SEMICOLON = ';'
     COLON = ':'
     AT = '@'
+    QUESTION = r'\?'
 
     EOF = 'eof'
     UNKNOWN = 'unknown'

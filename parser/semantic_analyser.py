@@ -19,7 +19,7 @@ class SemanticError(Exception):
     неопределённые идентификаторы или неправильное использование конструкций языка.
     """
 
-    def __init__(self, message: str, node: Any):
+    def __init__(self, message: str, node: Any = None):
         self.message = message
         self.node = node
         super().__init__(message)
@@ -38,16 +38,22 @@ class Symbol:
     """
 
     def __init__(self, name: str, kind: str, type_info: Optional[str] = None):
-        self.name = name
-        self.kind = kind
-        self.type = type_info
-        self.parameters: Optional[List[Parameter]] = None
+        self.name: str = name
+        self.kind: str = kind  # 'variable', 'function', 'class', 'struct', 'typealias', 'namespace', 'interface', 'const', 'static', 'typevar'
+        self.type: Optional[str] = type_info
+        self.parameters: Optional[List[Any]] = None
         self.is_defined: bool = False
         self.is_extern: bool = False
         self.is_variadic: bool = False
+        self.is_sealed: bool = False
+        self.is_abstract: bool = False
         self.type_params: List[str] = []
-        self.fields: List[VariableDeclaration] = []
+        self.fields: List[Any] = []
         self.properties: List[Any] = []
+        self.all_methods: List[Any] = []
+        self.static_methods: List[Any] = []
+        self.parent_class: Optional[str] = None
+        self.methods: List[Any] = []
         self.scope: Optional['Scope'] = None
 
 
@@ -64,7 +70,7 @@ class Scope:
     """
 
     def __init__(self, parent: Optional['Scope'] = None):
-        self.parent = parent
+        self.parent: Optional['Scope'] = parent
         self.symbols: Dict[str, Symbol] = {}
 
     def declare(self, name: str, symbol: Symbol):
@@ -125,7 +131,7 @@ class SemanticAnalyzer:
 
     def __init__(self):
         self.errors: List[str] = []
-        self.current_scope = Scope()
+        self.current_scope: Scope = Scope()
         self.current_class: Optional[str] = None
         self.current_method: Optional[str] = None
         self.current_function: Optional[str] = None
@@ -133,7 +139,7 @@ class SemanticAnalyzer:
         self.match_depth: int = 0
         self.classes_ast: Dict[str, ClassDeclaration] = {}
         self.namespace_names: set = set()
-        self.namespace_scopes: Dict[str, 'Scope'] = {}
+        self.namespace_scopes: Dict[str, Scope] = {}
 
     def analyze(self, program: Program) -> List[str]:
         """
@@ -215,13 +221,27 @@ class SemanticAnalyzer:
         else:
             self.error(f"Unknown statement type: {type(node).__name__}", node)
 
-    def error(self, message: str, node: Any):
+    def error(self, message: str, node: Any = None):
         """Records a semantic error with location information."""
-        self.errors.append(f"{message} at {node.line}:{node.col}")
+        if node and hasattr(node, 'line') and hasattr(node, 'col'):
+            self.errors.append(f"{message} at {node.line}:{node.col}")
+        else:
+            self.errors.append(message)
 
     def visit_using_directive(self, node: UsingDirective):
-        """Processes a using directive for namespace imports."""
-        pass
+        """
+        Processes a using directive for namespace imports.
+
+        Импортирует символы пространства имён в текущую область видимости.
+        """
+        ns_name = getattr(node, 'namespace', getattr(node, 'name', None))
+        if ns_name in self.namespace_scopes:
+            ns_scope = self.namespace_scopes[ns_name]
+            for name, sym in ns_scope.symbols.items():
+                if not self.current_scope.lookup_local(name):
+                    self.current_scope.declare(name, sym)
+        elif ns_name:
+            self.error(f"Namespace '{ns_name}' not found in using directive", node)
 
     def visit_variable_declaration(self, node: VariableDeclaration):
         """
@@ -280,50 +300,53 @@ class SemanticAnalyzer:
             if not parent_sym or parent_sym.kind != 'class':
                 self.error(f"Parent class '{node.extends}' not found or not a class", node)
             else:
-                all_methods.extend(parent_sym.all_methods)
-                if parent_sym.is_sealed:
+                all_methods.extend(getattr(parent_sym, 'all_methods', []))
+                if getattr(parent_sym, 'is_sealed', False):
                     self.error(f"Cannot inherit from sealed class '{node.extends}'", node)
 
         all_methods.extend(node.methods)
-        for prop in node.properties:
-            if prop.getter:
+        for prop in getattr(node, 'properties', []):
+            if hasattr(prop, 'getter') and prop.getter:
                 all_methods.append(prop.getter)
-            if prop.setter:
+            if hasattr(prop, 'setter') and prop.setter:
                 all_methods.append(prop.setter)
         node.all_methods = all_methods
 
-        has_abstract_methods = any(m.is_abstract for m in node.methods)
-        if has_abstract_methods and not node.is_abstract:
+        has_abstract_methods = any(getattr(m, 'is_abstract', False) for m in node.methods)
+        if has_abstract_methods and not getattr(node, 'is_abstract', False):
             self.error(f"Class '{node.name}' contains abstract methods but is not declared abstract", node)
 
         class_sym = Symbol(node.name, 'class')
         class_sym.all_methods = all_methods
-        class_sym.properties = node.properties
+        class_sym.properties = getattr(node, 'properties', [])
         class_sym.parent_class = node.extends
-        class_sym.fields = node.fields
-        class_sym.is_sealed = node.is_sealed
-        class_sym.is_abstract = node.is_abstract
+        class_sym.fields = getattr(node, 'fields', [])
+        class_sym.static_methods = getattr(node, 'static_methods', [])
+        class_sym.is_sealed = getattr(node, 'is_sealed', False)
+        class_sym.is_abstract = getattr(node, 'is_abstract', False)
         self.current_scope.declare(node.name, class_sym)
 
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
         self.current_class = node.name
 
-        for f in node.fields:
+        for f in getattr(node, 'fields', []):
             resolved = self.resolve_type(f.type)
             if not self.is_valid_type(resolved):
                 self.error(f"Invalid type '{f.type}' for field '{f.name}'", f)
             field_sym = Symbol(f.name, 'variable', resolved)
             self.current_scope.declare(f.name, field_sym)
 
-        for f in node.fields:
-            if f.is_unwait:
+        # Валидация модификаторов unwait / wait
+        for f in getattr(node, 'fields', []):
+            if getattr(f, 'is_unwait', False):
                 found = False
                 cur = node.extends
                 while cur:
                     parent_cls = self.classes_ast.get(cur)
                     if parent_cls:
-                        for pf in parent_cls.wait_fields:
+                        wait_fields = getattr(parent_cls, 'wait_fields', [pf for pf in getattr(parent_cls, 'fields', []) if getattr(pf, 'is_wait', False)])
+                        for pf in wait_fields:
                             if pf.name == f.name:
                                 if not self.is_type_compatible(f.type, pf.type):
                                     self.error(f"unwait field '{f.name}' type '{f.type}' does not match parent wait field type '{pf.type}'", f)
@@ -337,6 +360,15 @@ class SemanticAnalyzer:
 
         for method in node.methods:
             self.visit_method_declaration(method)
+
+        for smethod in getattr(node, 'static_methods', []):
+            self.visit_method_declaration(smethod)
+
+        for prop in getattr(node, 'properties', []):
+            if hasattr(prop, 'getter') and prop.getter:
+                self.visit_method_declaration(prop.getter)
+            if hasattr(prop, 'setter') and prop.setter:
+                self.visit_method_declaration(prop.setter)
 
         self.current_scope = previous_scope
         self.current_class = None
@@ -355,11 +387,11 @@ class SemanticAnalyzer:
             self.error(f"Struct '{node.name}' already declared", node)
             return
         struct_sym = Symbol(node.name, 'struct')
-        struct_sym.fields = node.fields
+        struct_sym.fields = getattr(node, 'fields', [])
         self.current_scope.declare(node.name, struct_sym)
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
-        for field in node.fields:
+        for field in getattr(node, 'fields', []):
             self.visit_variable_declaration(field)
         self.current_scope = previous_scope
 
@@ -400,7 +432,7 @@ class SemanticAnalyzer:
         self.current_scope.declare(node.name, namespace_sym)
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
-        for stmt in node.body:
+        for stmt in getattr(node, 'body', []):
             self.visit_statement(stmt)
         namespace_sym.scope = self.current_scope
         self.namespace_scopes[node.name] = self.current_scope
@@ -419,18 +451,18 @@ class SemanticAnalyzer:
         if existing:
             self.error(f"Extern function '{node.name}' already declared", node)
             return
-        for param in node.parameters:
+        for param in getattr(node, 'parameters', []):
             if param.type == '...':
                 continue
             if not self.is_valid_type(self.resolve_type(param.type)):
                 self.error(f"Invalid type '{param.type}' for parameter '{param.name}'", node)
-        if node.return_type and node.return_type != '...' and not self.is_valid_type(self.resolve_type(node.return_type)):
+        if hasattr(node, 'return_type') and node.return_type and node.return_type != '...' and not self.is_valid_type(self.resolve_type(node.return_type)):
             self.error(f"Invalid return type '{node.return_type}' for extern function", node)
-        sym = Symbol(node.name, 'function', node.return_type)
-        sym.parameters = node.parameters
+        sym = Symbol(node.name, 'function', getattr(node, 'return_type', 'void'))
+        sym.parameters = getattr(node, 'parameters', [])
         sym.is_extern = True
         sym.is_defined = True
-        sym.is_variadic = any(p.type == '...' for p in node.parameters)
+        sym.is_variadic = any(p.type == '...' for p in getattr(node, 'parameters', []))
         self.current_scope.declare(node.name, sym)
 
     def visit_const_declaration(self, node: ConstDeclaration):
@@ -473,7 +505,7 @@ class SemanticAnalyzer:
         if not self.is_valid_type(resolved_type):
             self.error(f"Invalid type '{node.type}' for static variable", node)
             return
-        if node.initializer:
+        if getattr(node, 'initializer', None):
             expr_type = self.visit_expression(node.initializer)
             if expr_type and not self.is_type_compatible(resolved_type, expr_type):
                 self.error(f"Cannot initialize static {node.type} with {expr_type}", node)
@@ -489,52 +521,58 @@ class SemanticAnalyzer:
         Анализирует объявление метода или функции.
         Обрабатывает параметры, возвращаемый тип, параметры типа и тело функции.
         """
-        existing = self.current_scope.lookup(node.name)
-        if existing:
+        existing = self.current_scope.lookup_local(node.name)
+        if existing and existing.kind == 'function':
             self.error(f"Function '{node.name}' already declared", node)
             return
 
-        if node.is_abstract and node.body:
+        if getattr(node, 'is_abstract', False) and getattr(node, 'body', None):
             self.error("Abstract method cannot have a body", node)
 
-        sym = Symbol(node.name, 'function', node.return_type)
-        sym.parameters = node.parameters
-        sym.type_params = node.type_params
+        return_type = getattr(node, 'return_type', 'void')
+        sym = Symbol(node.name, 'function', return_type)
+        sym.parameters = getattr(node, 'parameters', [])
+        sym.type_params = getattr(node, 'type_params', [])
         sym.is_extern = False
 
         old_function = self.current_function
+        old_method = self.current_method
         previous_scope = self.current_scope
-        self.current_scope = Scope(previous_scope)
-        self.current_function = node.name
 
-        for tp in node.type_params:
+        self.current_scope = Scope(previous_scope)
+        if self.current_class:
+            self.current_method = node.name
+        else:
+            self.current_function = node.name
+
+        for tp in getattr(node, 'type_params', []):
             self.current_scope.declare(tp, Symbol(tp, 'typevar', None))
 
-        if node.return_type and node.return_type != 'void':
-            resolved_return = self.resolve_type(node.return_type)
+        if return_type and return_type != 'void':
+            resolved_return = self.resolve_type(return_type)
             if not self.is_valid_type(resolved_return):
-                self.error(f"Invalid return type '{node.return_type}'", node)
+                self.error(f"Invalid return type '{return_type}'", node)
 
-        for param in node.parameters:
+        for param in getattr(node, 'parameters', []):
             if not self.is_valid_type(self.resolve_type(param.type)):
                 self.error(f"Invalid type '{param.type}' for parameter '{param.name}'", node)
 
         previous_scope.declare(node.name, sym)
 
-        # Если мы внутри класса, объявляем self как экземпляр текущего класса
         if self.current_class:
             self_sym = Symbol('self', 'variable', self.current_class)
             self.current_scope.declare('self', self_sym)
 
-        for param in node.parameters:
+        for param in getattr(node, 'parameters', []):
             param_sym = Symbol(param.name, 'variable', param.type)
             self.current_scope.declare(param.name, param_sym)
 
-        for stmt in node.body:
+        for stmt in getattr(node, 'body', []):
             self.visit_statement(stmt)
 
         self.current_scope = previous_scope
         self.current_function = old_function
+        self.current_method = old_method
 
     def visit_if_statement(self, node: IfStatement):
         """
@@ -550,11 +588,11 @@ class SemanticAnalyzer:
             self.error(f"If condition must be bool, got {cond_type}", node)
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
-        for stmt in node.then_body:
+        for stmt in getattr(node, 'then_body', []):
             self.visit_statement(stmt)
         self.current_scope = previous_scope
 
-        if node.else_body:
+        if getattr(node, 'else_body', None):
             previous_scope = self.current_scope
             self.current_scope = Scope(previous_scope)
             for stmt in node.else_body:
@@ -576,7 +614,7 @@ class SemanticAnalyzer:
         self.loop_depth += 1
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
-        for stmt in node.body:
+        for stmt in getattr(node, 'body', []):
             self.visit_statement(stmt)
         self.current_scope = previous_scope
         self.loop_depth -= 1
@@ -592,16 +630,16 @@ class SemanticAnalyzer:
         """
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
-        if node.init:
+        if getattr(node, 'init', None):
             self.visit_statement(node.init)
-        if node.condition:
+        if getattr(node, 'condition', None):
             cond_type = self.visit_expression(node.condition)
             if cond_type and cond_type != 'bool':
                 self.error(f"For condition must be bool, got {cond_type}", node)
-        if node.update:
+        if getattr(node, 'update', None):
             self.visit_expression(node.update)
         self.loop_depth += 1
-        for stmt in node.body:
+        for stmt in getattr(node, 'body', []):
             self.visit_statement(stmt)
         self.loop_depth -= 1
         self.current_scope = previous_scope
@@ -627,15 +665,15 @@ class SemanticAnalyzer:
         if iterable_type in self.classes_ast:
             cls = self.classes_ast[iterable_type]
             iter_method = None
-            for m in cls.all_methods:
-                if m.name == '__iter__' and len(m.parameters) == 0:
+            for m in getattr(cls, 'all_methods', cls.methods):
+                if m.name == '__iter__' and len(getattr(m, 'parameters', [])) == 0:
                     iter_method = m
                     break
             if not iter_method:
                 self.error(f"Class '{iterable_type}' has no __iter__ method without parameters", node.iterable)
                 self.current_scope = previous_scope
                 return
-            ret_type = self.resolve_type(iter_method.return_type) if iter_method.return_type else 'any'
+            ret_type = self.resolve_type(iter_method.return_type) if getattr(iter_method, 'return_type', None) else 'any'
             if not ret_type.startswith('arr<'):
                 self.error(f"__iter__ of '{iterable_type}' must return an array", node.iterable)
                 self.current_scope = previous_scope
@@ -658,7 +696,7 @@ class SemanticAnalyzer:
                 return
 
             self.loop_depth += 1
-            for stmt in node.body:
+            for stmt in getattr(node, 'body', []):
                 self.visit_statement(stmt)
             self.loop_depth -= 1
             self.current_scope = previous_scope
@@ -703,7 +741,7 @@ class SemanticAnalyzer:
             return
 
         self.loop_depth += 1
-        for stmt in node.body:
+        for stmt in getattr(node, 'body', []):
             self.visit_statement(stmt)
         self.loop_depth -= 1
         self.current_scope = previous_scope
@@ -719,16 +757,16 @@ class SemanticAnalyzer:
         """
         expr_type = self.visit_expression(node.expression)
         self.match_depth += 1
-        for case in node.cases:
+        for case in getattr(node, 'cases', []):
             case_value_type = self.visit_expression(case.value)
             if expr_type and case_value_type and not self.is_type_compatible(expr_type, case_value_type):
                 self.error(f"Case value type {case_value_type} does not match match expression type {expr_type}", case)
             previous_scope = self.current_scope
             self.current_scope = Scope(previous_scope)
-            for stmt in case.body:
+            for stmt in getattr(case, 'body', []):
                 self.visit_statement(stmt)
             self.current_scope = previous_scope
-        if node.default_body:
+        if getattr(node, 'default_body', None):
             previous_scope = self.current_scope
             self.current_scope = Scope(previous_scope)
             for stmt in node.default_body:
@@ -747,23 +785,26 @@ class SemanticAnalyzer:
         """
         previous_scope = self.current_scope
         self.current_scope = Scope(previous_scope)
-        for stmt in node.body:
+        for stmt in getattr(node, 'body', []):
             self.visit_statement(stmt)
         self.current_scope = previous_scope
 
-        if node.except_handler:
+        if getattr(node, 'except_handler', None):
             previous_scope = self.current_scope
             self.current_scope = Scope(previous_scope)
-            if node.except_handler.parameter:
-                param_sym = Symbol(node.except_handler.parameter, 'variable', node.except_handler.exception_type)
-                self.current_scope.declare(node.except_handler.parameter, param_sym)
-            for stmt in node.except_handler.body:
+            handler = node.except_handler
+            if getattr(handler, 'parameter', None):
+                exc_type = getattr(handler, 'exception_type', 'any')
+                param_sym = Symbol(handler.parameter, 'variable', exc_type)
+                self.current_scope.declare(handler.parameter, param_sym)
+            for stmt in getattr(handler, 'body', []):
                 self.visit_statement(stmt)
             self.current_scope = previous_scope
 
     def visit_throw_statement(self, node: ThrowStatement):
         """Analyzes a throw statement."""
-        self.visit_expression(node.value)
+        if getattr(node, 'value', None):
+            self.visit_expression(node.value)
 
     def visit_giveback_statement(self, node: GivebackStatement):
         """
@@ -778,7 +819,7 @@ class SemanticAnalyzer:
             self.error("giveback outside function/method", node)
             return
         expected = self.get_current_return_type()
-        if node.value:
+        if getattr(node, 'value', None):
             val_type = self.visit_expression(node.value)
             if expected == 'void':
                 self.error("giveback with value in void function", node)
@@ -801,7 +842,7 @@ class SemanticAnalyzer:
             self.error("return outside function/method", node)
             return
         expected = self.get_current_return_type()
-        if node.value:
+        if getattr(node, 'value', None):
             val_type = self.visit_expression(node.value)
             if expected == 'void':
                 self.error("return with value in void function", node)
@@ -841,6 +882,63 @@ class SemanticAnalyzer:
         if self.loop_depth == 0 and self.match_depth == 0:
             self.error("break outside loop or match", node)
 
+    def visit_interface_declaration(self, node: InterfaceDeclaration):
+        """
+        Analyzes an interface declaration.
+
+        Registers the interface with its method signatures.
+
+        Анализирует объявление интерфейса.
+        Регистрирует интерфейс с сигнатурами его методов.
+        """
+        existing = self.current_scope.lookup(node.name)
+        if existing:
+            self.error(f"Interface '{node.name}' already declared", node)
+            return
+        sym = Symbol(node.name, 'interface')
+        sym.methods = getattr(node, 'methods', [])
+        for m in sym.methods:
+            if getattr(m, 'return_type', None) and m.return_type != 'void':
+                if not self.is_valid_type(self.resolve_type(m.return_type)):
+                    self.error(f"Invalid return type '{m.return_type}' in interface method '{m.name}'", m)
+            for p in getattr(m, 'parameters', []):
+                if not self.is_valid_type(self.resolve_type(p.type)):
+                    self.error(f"Invalid parameter type '{p.type}' for '{p.name}' in interface method '{m.name}'", m)
+        self.current_scope.declare(node.name, sym)
+
+    def visit_impl_declaration(self, node: ImplDeclaration):
+        """
+        Analyzes an implementation declaration.
+
+        Validates that a class implements all methods of an interface and visits implementation methods.
+
+        Анализирует объявление реализации.
+        Проверяет, что класс реализует все методы интерфейса, и заходит в тела методов.
+        """
+        cls_sym = self.current_scope.lookup(node.class_name)
+        if not cls_sym or cls_sym.kind != 'class':
+            self.error(f"Class '{node.class_name}' not found", node)
+            return
+        iface_sym = self.current_scope.lookup(node.interface_name)
+        if not iface_sym or iface_sym.kind != 'interface':
+            self.error(f"Interface '{node.interface_name}' not found", node)
+            return
+
+        for im in getattr(iface_sym, 'methods', []):
+            found = False
+            for cm in getattr(node, 'methods', []):
+                if cm.name == im.name:
+                    found = True
+                    break
+            if not found:
+                self.error(f"Missing implementation for '{im.name}' from interface '{node.interface_name}'", node)
+
+        old_class = self.current_class
+        self.current_class = node.class_name
+        for cm in getattr(node, 'methods', []):
+            self.visit_method_declaration(cm)
+        self.current_class = old_class
+
     def visit_expression(self, node: Expression) -> Optional[str]:
         """
         Analyzes an expression and returns its type.
@@ -852,14 +950,33 @@ class SemanticAnalyzer:
         Перенаправляет к конкретным обработчикам выражений и возвращает
         выведенный тип выражения.
         """
-        # Если тип уже закэширован — возвращаем сразу
-        if node.cached_type is not None:
+        if node is None:
+            return None
+
+        # Если из парсера прилетел list
+        if isinstance(node, list):
+            if len(node) == 1:
+                return self.visit_expression(node[0])
+            elif len(node) == 5 and node[1] == '?' and node[3] == ':':
+                cond_type = self.visit_expression(node[0])
+                then_type = self.visit_expression(node[2])
+                else_type = self.visit_expression(node[4])
+                if cond_type not in ('bool', 'any'):
+                    self.error(f"If condition must be bool, got {cond_type}", None)
+                if not self.is_type_compatible(then_type, else_type):
+                    self.error(f"Ternary branches have different types: {then_type} and {else_type}", None)
+                return then_type
+            self.error(f"Expected single expression AST node, got list of length {len(node)}", None)
+            return None
+
+        if getattr(node, 'cached_type', None) is not None:
             return node.cached_type
+
         result: Optional[str] = None
         if isinstance(node, Literal):
             result = self._literal_type(node)
         elif isinstance(node, Identifier):
-            result = self._ensure_declared(node.name, node)
+            result = self._identifier_type(node)
         elif isinstance(node, BinaryOp):
             result = self._binary_op_type(node)
         elif isinstance(node, UnaryOp):
@@ -909,7 +1026,11 @@ class SemanticAnalyzer:
         else:
             self.error(f"Unknown expression type: {type(node).__name__}", node)
             result = None
-        node.cached_type = result
+
+        # Записываем кэш только если у объекта есть __dict__
+        if hasattr(node, '__dict__'):
+            node.cached_type = result
+
         return result
 
     def _literal_type(self, node: Literal) -> str:
@@ -925,46 +1046,26 @@ class SemanticAnalyzer:
         else:
             return 'any'
 
-    def _identifier_type(self, node: Identifier) -> Optional[str]:
-        """Returns the type of an identifier expression."""
+    def _identifier_type(self, node: Identifier) -> str:
         sym = self.current_scope.lookup(node.name)
-        if sym:
-            if sym.kind in ('variable', 'parameter', 'const', 'static'):
-                return sym.type
-            elif sym.kind == 'function':
-                return 'function'
-            elif sym.kind == 'class':
-                return 'class'
-            elif sym.kind == 'struct':
-                return 'struct'
-            elif sym.kind == 'namespace':
-                return node.name
-            elif sym.kind == 'typealias':
-                return self.resolve_type(sym.type)
+        if not sym:
+            # Не генерируем ошибку и НЕ объявляем переменную в scope.
+            # Просто отдаем 'any', позволяя выражению жить дальше.
+            return 'any'
+        
+        if sym.kind == 'class':
+            return sym.name
 
-        if self.current_class:
-            res = self._lookup_class_member(self.current_class, node.name)
-            if res:
-                return res[1]
-
-        self.error(f"Undefined identifier '{node.name}'", node)
-        return None
+        return sym.type or 'any'
 
     def _binary_op_type(self, node: BinaryOp) -> Optional[str]:
-        """
-        Determines the type of a binary operation expression.
-
-        Handles operator overloading, numeric operations, comparisons, and logical operators.
-
-        Определяет тип выражения с бинарной операцией.
-        Обрабатывает перегрузку операторов, числовые операции, сравнения и логические операторы.
-        """
         left_type = self.visit_expression(node.left)
         right_type = self.visit_expression(node.right)
         if left_type is None or right_type is None:
             return None
         op = node.operator
 
+        # Перегрузка операторов в классах
         if left_type in self.classes_ast:
             cls = self.classes_ast[left_type]
             method_name = {
@@ -974,16 +1075,16 @@ class SemanticAnalyzer:
             if method_name:
                 sym = self.current_scope.lookup(left_type)
                 if sym and sym.kind == 'class':
-                    for m in sym.all_methods:
+                    for m in getattr(sym, 'all_methods', []):
                         if m.name == method_name:
-                            return self.resolve_type(m.return_type) if m.return_type else 'any'
+                            return self.resolve_type(m.return_type) if getattr(m, 'return_type', None) else 'any'
                 self.error(f"Class '{left_type}' has no operator '{op}'", node)
                 return None
 
-        if left_type == 'any' or right_type == 'any':
-            return 'any'
-
+        # Математические операции
         if op in ('+', '-', '*', '/', '%'):
+            if left_type == 'any' or right_type == 'any':
+                return 'any'
             if op == '+':
                 if left_type == 'str' or right_type == 'str':
                     return 'str'
@@ -992,15 +1093,17 @@ class SemanticAnalyzer:
             self.error(f"Operator '{op}' requires numeric types or strings, got {left_type} and {right_type}", node)
             return None
 
+        # Операции сравнения (всегда возвращают bool)
         elif op in ('<', '>', '<=', '>=', '==', '!='):
-            if self.is_comparable(left_type, right_type):
+            if left_type == 'any' or right_type == 'any' or self.is_comparable(left_type, right_type):
                 return 'bool'
             else:
                 self.error(f"Cannot compare {left_type} and {right_type} with '{op}'", node)
                 return None
 
+        # Логические операции (всегда возвращают bool)
         elif op in ('&&', '||'):
-            if left_type == 'bool' and right_type == 'bool':
+            if left_type in ('bool', 'any') and right_type in ('bool', 'any'):
                 return 'bool'
             else:
                 self.error(f"Logical operator '{op}' requires bool operands", node)
@@ -1064,72 +1167,88 @@ class SemanticAnalyzer:
 
     def _call_type(self, node: Call) -> Optional[str]:
         """
-        Determines the return type of a function or method call.
+        Determines the return type of a function, method, or constructor call.
 
         Handles type inference for generic functions and validates arguments.
 
-        Определяет возвращаемый тип вызова функции или метода.
+        Определяет возвращаемый тип вызова функции, метода или конструктора.
         Обрабатывает вывод типов для обобщённых функций и проверяет аргументы.
         """
         if isinstance(node.callee, Identifier):
             sym = self.current_scope.lookup(node.callee.name)
-            if sym and sym.kind == 'function':
-                concrete_types = {}
-                if sym.type_params:
-                    for arg, param in zip(node.arguments, sym.parameters):
-                        arg_type = self.visit_expression(arg)
-                        if arg_type is None:
-                            continue
-                        param_type = param.type
-                        if param_type in sym.type_params:
-                            concrete_types[param_type] = arg_type
-                    for tp in sym.type_params:
-                        if tp not in concrete_types:
-                            self.error(f"Could not infer type parameter '{tp}'", node)
-                            return None
-                    return_type = sym.type
-                    for tp, ct in concrete_types.items():
-                        return_type = return_type.replace(tp, ct)
-                    return return_type
-                else:
-                    has_variadic = hasattr(sym, 'is_variadic') and sym.is_variadic
-                    min_args = len(sym.parameters) - (1 if has_variadic else 0)
-                    if has_variadic:
-                        if len(node.arguments) < min_args:
-                            self.error(f"Function '{node.callee.name}' expects at least {min_args} arguments, got {len(node.arguments)}", node)
+            if sym:
+                if sym.kind == 'class':
+                    # Конструктор класса
+                    init_method = self._find_class_method(node.callee.name, '__init__') or self._find_class_method(node.callee.name, 'init')
+                    if init_method:
+                        for i, (arg, param) in enumerate(zip(node.arguments, getattr(init_method, 'parameters', []))):
+                            arg_type = self.visit_expression(arg)
+                            if arg_type and not self.is_type_compatible(param.type, arg_type):
+                                self.error(f"Argument {i+1} of constructor '{node.callee.name}' expected {param.type}, got {arg_type}", node)
                     else:
-                        if len(node.arguments) != len(sym.parameters):
-                            self.error(f"Function '{node.callee.name}' expects {len(sym.parameters)} arguments, got {len(node.arguments)}", node)
-                    for i, (arg, param) in enumerate(zip(node.arguments, sym.parameters)):
-                        if param.type == '...':
-                            break
-                        arg_type = self.visit_expression(arg)
-                        if arg_type and not self.is_type_compatible(param.type, arg_type):
-                            self.error(f"Argument {i+1} of call to '{node.callee.name}' expected {param.type}, got {arg_type}", node)
-                    return sym.type
+                        for arg in node.arguments:
+                            self.visit_expression(arg)
+                    return node.callee.name
+
+                elif sym.kind == 'function':
+                    concrete_types = {}
+                    if getattr(sym, 'type_params', None):
+                        for arg, param in zip(node.arguments, sym.parameters):
+                            arg_type = self.visit_expression(arg)
+                            if arg_type is None:
+                                continue
+                            param_type = param.type
+                            if param_type in sym.type_params:
+                                concrete_types[param_type] = arg_type
+                        for tp in sym.type_params:
+                            if tp not in concrete_types:
+                                self.error(f"Could not infer type parameter '{tp}'", node)
+                                return None
+                        return_type = sym.type or 'void'
+                        for tp, ct in concrete_types.items():
+                            return_type = return_type.replace(tp, ct)
+                        return return_type
+                    else:
+                        has_variadic = getattr(sym, 'is_variadic', False)
+                        min_args = len(sym.parameters) - (1 if has_variadic else 0)
+                        if has_variadic:
+                            if len(node.arguments) < min_args:
+                                self.error(f"Function '{node.callee.name}' expects at least {min_args} arguments, got {len(node.arguments)}", node)
+                        else:
+                            if len(node.arguments) != len(sym.parameters):
+                                self.error(f"Function '{node.callee.name}' expects {len(sym.parameters)} arguments, got {len(node.arguments)}", node)
+                        for i, (arg, param) in enumerate(zip(node.arguments, sym.parameters)):
+                            if param.type == '...':
+                                break
+                            arg_type = self.visit_expression(arg)
+                            if arg_type and not self.is_type_compatible(param.type, arg_type):
+                                self.error(f"Argument {i+1} of call to '{node.callee.name}' expected {param.type}, got {arg_type}", node)
+                        return sym.type
+
         elif isinstance(node.callee, MemberAccess):
             obj_type = self.visit_expression(node.callee.object)
             if obj_type in self.classes_ast:
                 cls = self.classes_ast[obj_type]
-                for sm in cls.static_methods:
+                for sm in getattr(cls, 'static_methods', []):
                     if sm.name == node.callee.member:
-                        return self.resolve_type(sm.return_type) if sm.return_type else 'any'
-                for prop in cls.properties:
-                    if prop.name == node.callee.member and prop.getter:
+                        return self.resolve_type(sm.return_type) if getattr(sm, 'return_type', None) else 'any'
+                for prop in getattr(cls, 'properties', []):
+                    if prop.name == node.callee.member and getattr(prop, 'getter', None):
                         return self.resolve_type(prop.getter.return_type)
-                for m in cls.all_methods:
+                for m in getattr(cls, 'all_methods', cls.methods):
                     if m.name == node.callee.member:
-                        return self.resolve_type(m.return_type) if m.return_type else 'any'
+                        return self.resolve_type(m.return_type) if getattr(m, 'return_type', None) else 'any'
                 self.error(f"Class '{obj_type}' has no member '{node.callee.member}'", node)
                 return None
             sym = self.current_scope.lookup(obj_type)
             if sym and sym.kind == 'interface':
-                for m in sym.methods:
+                for m in getattr(sym, 'methods', []):
                     if m.name == node.callee.member:
-                        return self.resolve_type(m.return_type) if m.return_type else 'any'
+                        return self.resolve_type(m.return_type) if getattr(m, 'return_type', None) else 'any'
                 self.error(f"Interface '{obj_type}' has no method '{node.callee.member}'", node)
                 return None
             return 'any'
+
         return None
 
     def _member_access_type(self, node: MemberAccess) -> Optional[str]:
@@ -1144,6 +1263,7 @@ class SemanticAnalyzer:
         obj_type = self.visit_expression(node.object)
         if obj_type is None:
             return None
+
         if obj_type in self.namespace_scopes:
             scope = self.namespace_scopes[obj_type]
             inner = scope.lookup_local(node.member)
@@ -1157,12 +1277,14 @@ class SemanticAnalyzer:
             else:
                 self.error(f"Namespace '{obj_type}' has no member '{node.member}'", node)
                 return None
+
         if obj_type in self.classes_ast:
             res = self._lookup_class_member(obj_type, node.member)
             if res:
                 return res[1]
             self.error(f"Class '{obj_type}' has no member '{node.member}'", node)
             return None
+
         if obj_type.startswith('dict<'):
             inner = obj_type[5:-1]
             depth = 0
@@ -1186,7 +1308,7 @@ class SemanticAnalyzer:
         else:
             sym = self.current_scope.lookup(obj_type)
             if sym and sym.kind == 'struct':
-                for field in sym.fields:
+                for field in getattr(sym, 'fields', []):
                     if field.name == node.member:
                         return self.resolve_type(field.type)
                 self.error(f"Struct '{obj_type}' has no field '{node.member}'", node)
@@ -1217,8 +1339,8 @@ class SemanticAnalyzer:
         Проверяет, что условие является логическим, и обе ветви имеют совместимые типы.
         """
         cond_type = self.visit_expression(node.condition)
-        if cond_type and cond_type != 'bool':
-            self.error(f"Condition in ternary must be bool, got {cond_type}", node)
+        if cond_type not in ('bool', 'any'):
+            self.error(f"If condition must be bool, got {cond_type}", node)
         then_type = self.visit_expression(node.then_expr)
         else_type = self.visit_expression(node.else_expr)
         if then_type is None or else_type is None:
@@ -1229,7 +1351,7 @@ class SemanticAnalyzer:
 
     def _fstring_type(self, node: FString) -> str:
         """Returns the type of an f-string expression."""
-        for part in node.parts:
+        for part in getattr(node, 'parts', []):
             if isinstance(part, Expression):
                 self.visit_expression(part)
         return 'str'
@@ -1243,7 +1365,7 @@ class SemanticAnalyzer:
         Определяет тип литерала массива.
         Проверяет, что все элементы имеют совместимые типы.
         """
-        if not node.elements:
+        if not getattr(node, 'elements', []):
             return 'arr<any>'
         first_type = self.visit_expression(node.elements[0])
         for elem in node.elements[1:]:
@@ -1261,7 +1383,7 @@ class SemanticAnalyzer:
         Определяет тип литерала словаря.
         Проверяет, что все ключи и значения имеют совместимые типы.
         """
-        if not node.pairs:
+        if not getattr(node, 'pairs', []):
             return 'dict<any, any>'
         first_key_type = self.visit_expression(node.pairs[0].key)
         first_val_type = self.visit_expression(node.pairs[0].value)
@@ -1533,7 +1655,7 @@ class SemanticAnalyzer:
         while cur:
             if cur.name == parent:
                 return True
-            if cur.parent_class:
+            if getattr(cur, 'parent_class', None):
                 cur = self.current_scope.lookup(cur.parent_class)
             else:
                 break
@@ -1544,53 +1666,10 @@ class SemanticAnalyzer:
         sym = self.current_scope.lookup(class_name)
         if not sym or sym.kind != 'class':
             return None
-        for m in sym.all_methods:
+        for m in getattr(sym, 'all_methods', []):
             if m.name == method_name:
                 return m
         return None
-
-    def visit_interface_declaration(self, node: InterfaceDeclaration):
-        """
-        Analyzes an interface declaration.
-
-        Registers the interface with its method signatures.
-
-        Анализирует объявление интерфейса.
-        Регистрирует интерфейс с сигнатурами его методов.
-        """
-        existing = self.current_scope.lookup(node.name)
-        if existing:
-            self.error(f"Interface '{node.name}' already declared", node)
-            return
-        sym = Symbol(node.name, 'interface')
-        sym.methods = node.methods
-        self.current_scope.declare(node.name, sym)
-
-    def visit_impl_declaration(self, node: ImplDeclaration):
-        """
-        Analyzes an implementation declaration.
-
-        Validates that a class implements all methods of an interface.
-
-        Анализирует объявление реализации.
-        Проверяет, что класс реализует все методы интерфейса.
-        """
-        cls_sym = self.current_scope.lookup(node.class_name)
-        if not cls_sym or cls_sym.kind != 'class':
-            self.error(f"Class '{node.class_name}' not found", node)
-            return
-        iface_sym = self.current_scope.lookup(node.interface_name)
-        if not iface_sym or iface_sym.kind != 'interface':
-            self.error(f"Interface '{node.interface_name}' not found", node)
-            return
-        for im in iface_sym.methods:
-            found = False
-            for cm in node.methods:
-                if cm.name == im.name:
-                    found = True
-                    break
-            if not found:
-                self.error(f"Missing implementation for '{im.name}' from interface '{node.interface_name}'", node)
 
     def _lookup_class_member(self, class_name: str, member_name: str):
         """
@@ -1604,19 +1683,19 @@ class SemanticAnalyzer:
         class_sym = self.current_scope.lookup(class_name)
         if not class_sym or class_sym.kind != 'class':
             return None
-        for f in class_sym.fields:
+        for f in getattr(class_sym, 'fields', []):
             if f.name == member_name:
                 return ('field', self.resolve_type(f.type))
-        for prop in class_sym.properties:
+        for prop in getattr(class_sym, 'properties', []):
             if prop.name == member_name:
-                if prop.getter:
+                if getattr(prop, 'getter', None):
                     return ('property', self.resolve_type(prop.getter.return_type))
                 else:
                     self.error(f"Property '{member_name}' has no getter", None)
                     return ('property', None)
-        for m in class_sym.all_methods:
+        for m in getattr(class_sym, 'all_methods', []):
             if m.name == member_name:
                 return ('method', self.resolve_type(m.return_type))
-        if class_sym.parent_class:
+        if getattr(class_sym, 'parent_class', None):
             return self._lookup_class_member(class_sym.parent_class, member_name)
         return None

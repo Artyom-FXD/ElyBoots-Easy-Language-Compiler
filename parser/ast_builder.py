@@ -156,23 +156,35 @@ class ASTBuilder:
         body = self._collect_top_level_decls(top_decls) if top_decls else []
         return NamespaceDeclaration(line=line, col=col, name=ns_name, body=body)
 
+    def _find_identifier(self, node: ParseNode) -> Optional[str]:
+        if node is None:
+            return None
+        if node.token and node.token.type.name == 'IDENTIFIER':
+            return node.token.lexeme
+        for child in node.children:
+            found = self._find_identifier(child)
+            if found:
+                return found
+        return None
+
     def visit_TypeAliasDecl(self, node: ParseNode) -> TypeAlias:
         line, col = self._get_pos(node)
-        ident_node = [c for c in node.children if c.token and c.token.lexeme not in ('type', '=')][0]
+        ident_name = self._find_identifier(node) or "unknown"
         dt_node = self._find_child(node, "DataType")
         target_type = self._extract_type(dt_node)
-        return TypeAlias(line=line, col=col, name=ident_node.token.lexeme, target_type=target_type)
+        return TypeAlias(line=line, col=col, name=ident_name, target_type=target_type)
 
     def visit_ExternDecl(self, node: ParseNode) -> ExternFunction:
         line, col = self._get_pos(node)
         type_node = self._find_child(node, "Type")
         ret_type = self._extract_type(type_node)
         
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
+
         params_node = self._find_child(node, "Params")
         params = self._process_params(params_node)
         
-        return ExternFunction(line=line, col=col, name=ident_node.token.lexeme, parameters=params, return_type=ret_type)
+        return ExternFunction(line=line, col=col, name=ident_name, parameters=params, return_type=ret_type)
 
     # =========================================================================
     # ФУНКЦИИ И ПАРАМЕТРЫ
@@ -187,7 +199,7 @@ class ASTBuilder:
         type_node = self._find_child(node, "Type")
         ret_type = self._extract_type(type_node)
         
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
         
         generic_node = self._find_child(node, "GenericParamsOpt")
         type_params = self._extract_generic_params(generic_node)
@@ -200,7 +212,7 @@ class ASTBuilder:
         
         return MethodDeclaration(
             line=line, col=col,
-            name=ident_node.token.lexeme,
+            name=ident_name,
             return_type=ret_type,
             parameters=params,
             body=body,
@@ -267,7 +279,7 @@ class ASTBuilder:
         modifiers_node = self._find_child(node, "ClassModifiers")
         modifiers = self._extract_class_modifiers(modifiers_node)
         
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
         
         base_node = self._find_child(node, "BaseClassOpt")
         extends = base_node.children[0].token.lexeme if (base_node and base_node.children) else None
@@ -277,7 +289,7 @@ class ASTBuilder:
         
         return ClassDeclaration(
             line=line, col=col,
-            name=ident_node.token.lexeme,
+            name=ident_name,
             extends=extends,
             methods=methods,
             fields=fields,
@@ -289,7 +301,7 @@ class ASTBuilder:
 
     def visit_StructDecl(self, node: ParseNode) -> StructDeclaration:
         line, col = self._get_pos(node)
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
         
         generic_node = self._find_child(node, "GenericParamsOpt")
         type_params = self._extract_generic_params(generic_node)
@@ -299,17 +311,17 @@ class ASTBuilder:
         
         return StructDeclaration(
             line=line, col=col,
-            name=ident_node.token.lexeme,
+            name=ident_name,
             fields=fields + wait_fields,
             type_params=type_params
         )
 
     def visit_InterfaceDecl(self, node: ParseNode) -> InterfaceDeclaration:
         line, col = self._get_pos(node)
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
         members_node = self._find_child(node, "ClassMembers")
         methods, _, _, _ = self._process_class_members(members_node)
-        return InterfaceDeclaration(line=line, col=col, name=ident_node.token.lexeme, methods=methods)
+        return InterfaceDeclaration(line=line, col=col, name=ident_name, methods=methods)
 
     def visit_ImplDecl(self, node: ParseNode) -> ImplDeclaration:
         line, col = self._get_pos(node)
@@ -375,7 +387,7 @@ class ASTBuilder:
         dt_node = self._find_child(node, "DataType")
         dt_type = self._extract_type(dt_node)
         
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
         
         init_opt = self._find_child(node, "InitOpt")
         initializer = self.build(init_opt.children[1]) if (init_opt and len(init_opt.children) > 1) else None
@@ -384,7 +396,7 @@ class ASTBuilder:
             line=line, col=col,
             modifier=modifier,
             type=dt_type,
-            name=ident_node.token.lexeme,
+            name=ident_name,
             initializer=initializer,
             is_unwait=(modifier == "unwait")
         )
@@ -397,7 +409,7 @@ class ASTBuilder:
         type_node = self._find_child(node, "Type")
         ret_type = self._extract_type(type_node)
         
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
         
         params_node = self._find_child(node, "Params")
         params = self._process_params(params_node)
@@ -410,7 +422,7 @@ class ASTBuilder:
                 
         return MethodDeclaration(
             line=line, col=col,
-            name=ident_node.token.lexeme,
+            name=ident_name,
             return_type=ret_type,
             parameters=params,
             body=body,
@@ -454,7 +466,7 @@ class ASTBuilder:
         dt_node = self._find_child(node, "DataType")
         dt_type = self._extract_type(dt_node)
         
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
+        ident_name = self._find_identifier(node) or "unknown"
         
         init_opt = self._find_child(node, "InitOpt")
         initializer = None
@@ -465,7 +477,7 @@ class ASTBuilder:
             line=line, col=col,
             modifier=modifier,
             type=dt_type,
-            name=ident_node.token.lexeme,
+            name=ident_name,
             initializer=initializer
         )
 
@@ -495,16 +507,25 @@ class ASTBuilder:
 
     def visit_ForStmt(self, node: ParseNode) -> ForLoop:
         line, col = self._get_pos(node)
-        vdecl = self.visit_VarDecl(self._find_child(node, "VarDecl"))
-        cond = self.build(self._find_child(node, "Expr"))
-        update = self.build(self._find_child(node, "Assignment"))
-        body = self.visit_Block(self._find_child(node, "Block"))
+        
+        vdecl_node = self._find_child(node, "VarDecl")
+        vdecl = self.visit_VarDecl(vdecl_node) if vdecl_node else None
+        
+        expr_node = self._find_child(node, "Expr")
+        cond = self.build(expr_node) if expr_node else None
+        
+        assign_node = self._find_child(node, "Assignment")
+        update = self.build(assign_node) if assign_node else None
+        
+        block_node = self._find_child(node, "Block")
+        body = self.visit_Block(block_node) if block_node else []
+        
         return ForLoop(line=line, col=col, init=vdecl, condition=cond, update=update, body=body)
 
     def visit_ForeachStmt(self, node: ParseNode) -> ForEachLoop:
         line, col = self._get_pos(node)
-        ident_node = [c for c in node.children if c.token and c.token.type.name == 'IDENTIFIER'][0]
-        item_var = VariableDeclaration(line=line, col=col, modifier=None, type="any", name=ident_node.token.lexeme, initializer=None)
+        ident_name = self._find_identifier(node) or "unknown"
+        item_var = VariableDeclaration(line=line, col=col, modifier=None, type="any", name=ident_name, initializer=None)
         iterable = self.build(self._find_child(node, "Expr"))
         body = self.visit_Block(self._find_child(node, "Block"))
         return ForEachLoop(line=line, col=col, item_decl=item_var, iterable=iterable, body=body)
@@ -534,15 +555,30 @@ class ASTBuilder:
     # =========================================================================
 
     def _binary_cascade(self, node: ParseNode) -> Expression:
+        if not node.children:
+            return None
         if len(node.children) == 1:
             return self.build(node.children[0])
-        elif len(node.children) == 3:
-            line, col = self._get_pos(node)
-            left = self.build(node.children[0])
-            op = node.children[1].token.lexeme if node.children[1].token else node.children[1].name
-            right = self.build(node.children[2])
-            return BinaryOp(line=line, col=col, left=left, operator=op, right=right)
-        return self.build(node.children[0])
+
+        line, col = self._get_pos(node)
+        left = self.build(node.children[0])
+
+        # Сворачиваем цепочки операндов и операторов: [left, op1, right1, op2, right2, ...]
+        i = 1
+        while i < len(node.children):
+            op_node = node.children[i]
+            # Извлекаем лексему оператора
+            if op_node.token:
+                op = op_node.token.lexeme
+            else:
+                op_res = self.build(op_node)
+                op = op_res if isinstance(op_res, str) else op_node.name
+
+            right = self.build(node.children[i + 1])
+            left = BinaryOp(line=line, col=col, left=left, operator=op, right=right)
+            i += 2
+
+        return left
 
     visit_Expr = _binary_cascade
     visit_NullCoalescing = _binary_cascade
@@ -575,9 +611,13 @@ class ASTBuilder:
         line, col = self._get_pos(node)
         children = node.children
 
-        # Литералы, скобки, идентификаторы
+        # Литералы, идентификаторы
         if len(children) == 1:
             return self.build(children[0])
+
+        # Выражения в скобках: ( expr )
+        if len(children) == 3 and children[0].token and children[0].token.lexeme == '(' and children[2].token and children[2].token.lexeme == ')':
+            return self.build(children[1])
 
         # Вызов функции: print(...) ИЛИ IDENTIFIER(...)
         if len(children) == 4 and children[0].token and children[1].token and children[1].token.lexeme == '(':
@@ -601,7 +641,7 @@ class ASTBuilder:
         # Индексация: primary[expr]
         if len(children) == 4 and children[1].token and children[1].token.lexeme == '[':
             target = self.build(children[0])
-            idx = self.build(children[1])
+            idx = self.build(children[2])
             return IndexExpression(line=line, col=col, target=target, index=idx)
 
         # Вызов метода: primary.method(...)
@@ -773,3 +813,43 @@ class ASTBuilder:
     def visit_IDENTIFIER(self, node: ParseNode) -> Identifier:
         line, col = self._get_pos(node)
         return Identifier(line=line, col=col, name=node.token.lexeme)
+
+    # =========================================================================
+    # ТЕРНАРНЫЙ ОПЕРАТОР И УСЛОВНЫЕ ВЫРАЖЕНИЯ
+    # =========================================================================
+
+    def visit_Conditional(self, node: ParseNode) -> Expression:
+        return self._build_conditional(node)
+
+    def visit_ConditionalExpr(self, node: ParseNode) -> Expression:
+        return self._build_conditional(node)
+
+    def visit_Ternary(self, node: ParseNode) -> Expression:
+        return self._build_conditional(node)
+
+    def visit_TernaryExpr(self, node: ParseNode) -> Expression:
+        return self._build_conditional(node)
+
+    def _build_conditional(self, node: ParseNode) -> Expression:
+        if len(node.children) == 1:
+            return self.build(node.children[0])
+
+        line, col = self._get_pos(node)
+
+        # Отфильтровываем токены-разделители '?' и ':'
+        expr_children = [c for c in node.children if not (c.token and c.token.lexeme in ('?', ':'))]
+
+        if len(expr_children) == 3:
+            cond = self.build(expr_children[0])
+            then_expr = self.build(expr_children[1])
+            else_expr = self.build(expr_children[2])
+            return Conditional(line=line, col=col, condition=cond, then_expr=then_expr, else_expr=else_expr)
+
+        # Прямой фолбэк для 5 дочерних элементов [cond, '?', then, ':', else]
+        if len(node.children) >= 5:
+            cond = self.build(node.children[0])
+            then_expr = self.build(node.children[2])
+            else_expr = self.build(node.children[4])
+            return Conditional(line=line, col=col, condition=cond, then_expr=then_expr, else_expr=else_expr)
+
+        return self.build(node.children[0])

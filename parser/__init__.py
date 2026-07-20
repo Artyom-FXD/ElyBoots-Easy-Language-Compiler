@@ -61,9 +61,10 @@ from .dtcs import (
 )
 # from .parser import Parser // Now we use EarleyParser
 from .semantic_analyser import SemanticError, Symbol, Scope, SemanticAnalyzer
-from .coreparse import Parser
+from .coreparse import Parser, EarleyParser
 
 __all__ = [
+    "EarleyParser",
     "Parser",
     "SemanticError",
     "Symbol",

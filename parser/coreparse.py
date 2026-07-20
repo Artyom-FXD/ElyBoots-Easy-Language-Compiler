@@ -17,9 +17,7 @@ class Parser:
         BOLD = '\033[1m'
         RESET = '\033[0m'
 
-from ast_builder import ASTBuilder
-
-class ElyOrchestrator:
+class EarleyParser:
     def __init__(self, grammar: Grammar):
         self.grammar = grammar
         self.parser = ElyEarleyParser(self.grammar)
@@ -106,7 +104,7 @@ if __name__ == "__main__":
     }
     """
 
-    parser = ElyOrchestrator(ely_grammar)
+    parser = EarleyParser(ely_grammar)
     try:
         print("--- СБОРКА ПРОЕКТА ЗАПУЩЕНА ---")
         # Получаем готовое дерево CST и контекст за один вызов

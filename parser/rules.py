@@ -232,7 +232,28 @@ ely_grammar_rules = [
     # =====================================================================
     Rule("Expr", ["NullCoalescing"]),
 
-    # 0. Null-coalescing (??)
+# =====================================================================
+    # 7. МАТЕМАТИЧЕСКИЕ И ЛОГИЧЕСКИЕ ВЫРАЖЕНИЯ (Полный каскад приоритетов)
+    # =====================================================================
+    Rule("Expr", ["Ternary"]),
+
+    # ---------------------------------------------------------------------
+    # 0. ТЕРНАРНЫЕ ОПЕРАТОРЫ
+    # ---------------------------------------------------------------------
+    # Python-style:  a = 2 if (1 == 1) else 4
+    Rule("Ternary", ["LogicOr", "IF", "LogicOr", "ELSE", "Ternary"]),
+
+    # C/Ely-style:   a = (1 == 1) ?? 2 : 4  (FAST_CONDITION = '??', COLON = ':')
+    Rule("Ternary", ["LogicOr", "FAST_CONDITION", "Ternary", "COLON", "Ternary"]),
+
+    # (Опционально) Одиночный '?' на случай, если в будущем добавишь QUESTION в лексер:
+    Rule("Ternary", ["LogicOr", "QUESTION", "Ternary", "COLON", "Ternary"]),
+
+    # ---------------------------------------------------------------------
+    # 0.1. NULL-COALESCING (a ?? default_val) & Спуск приоритета
+    # ---------------------------------------------------------------------
+    Rule("Ternary", ["NullCoalescing"]),
+
     Rule("NullCoalescing", ["NullCoalescing", "FAST_CONDITION", "LogicOr"]),
     Rule("NullCoalescing", ["LogicOr"]),
 

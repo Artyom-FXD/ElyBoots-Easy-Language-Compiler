@@ -17,9 +17,12 @@ elif sys.argv[0] and sys.argv[0].lower().endswith('.exe'):
 else:
     _BASE_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(_BASE_DIR))
-from lexer_module import Lexer
-from parser import *
+
+# Новый парсер и грамматика
+from parser import EarleyParser, SemanticAnalyzer, Program, ClassDeclaration, InterfaceDeclaration, MethodDeclaration, NamespaceDeclaration, UsingDirective
+from parser.rules import ely_grammar
 from codegen.codegen import CppCodeGen
+
 
 class TC:
     """ANSI terminal color/style codes."""
@@ -74,21 +77,21 @@ class ProjectBuilder:
         self.cache_path = self.build_dir / 'cache.json'
         self.mode = 'build'
 
+        # Инициализация нового Earley-парсера
+        self.parser = EarleyParser(ely_grammar)
+
     def _get_svlm_paths(self) -> Tuple[Optional[Path], Optional[Path]]:
         """Ищет SVLM.exe строго в двух указанных местах относительно корня компилятора."""
-        # Вариант 1: /Spruce/svlm.exe
         path_spruce = _BASE_DIR / 'Spruce' / 'SVLM.exe'
         if path_spruce.is_file():
             ssdk = path_spruce.parent / 'SSDK'
             return path_spruce, (ssdk if ssdk.exists() else None)
 
-        # Вариант 2: /svlm.exe
         path_root = _BASE_DIR / 'SVLM.exe'
         if path_root.is_file():
             ssdk = path_root.parent / 'SSDK'
             return path_root, (ssdk if ssdk.exists() else None)
 
-        # Резервный флаг, если путь передали через аргументы CLI
         if self.compiler_path:
             p = Path(self.compiler_path)
             if p.is_file() and p.name.lower() == 'svlm.exe':
@@ -114,7 +117,6 @@ class ProjectBuilder:
             p = Path(self.compiler_path)
             if p.exists() and p.is_file() and p.name.lower() != 'svlm.exe':
                 return p.stem, str(p), extra_flags
-        # Ищем стандартный системный GCC/G++ если нужно
         for comp in ['g++', 'gcc', 'clang++', 'clang']:
             if shutil.which(comp):
                 return comp, comp, extra_flags
@@ -274,30 +276,31 @@ class ProjectBuilder:
             return False
 
         self._print_project_info(sources)
-
-        # Гарантируем наличие папки build внутри корня проекта
         self.build_dir.mkdir(parents=True, exist_ok=True)
 
         if not self._prepare_runtime():
             return False
 
         # --------------------------------------------------------------------
-        # ЭТАП 1. ФРОНТЕНД И ГЕНЕРАЦИЯ C++ КОДА (Оригинальная логика сохранена)
+        # ЭТАП 1. ФРОНТЕНД И ГЕНЕРАЦИЯ C++ КОДА
         # --------------------------------------------------------------------
         print(f"\n{TC.tag('BUILD')} Parsing and analyzing Ely sources...")
         all_statements = []
         parser_errors_occurred = False
+
         for src in sources:
             with open(src, 'r', encoding='utf-8') as f:
                 source_text = f.read()
-            lexer = Lexer(source_text)
-            parser = Parser(lexer)
-            prog = parser.parse()
-            if parser.errors:
+            try:
+                # Запуск единого пайплайна парсера (препроцессор + токенизация + CST -> AST)
+                ast, _ = self.parser.run(source_text)
+                if ast and hasattr(ast, 'statements'):
+                    all_statements.extend(ast.statements)
+            except (SyntaxError, RuntimeError) as e:
                 parser_errors_occurred = True
-                self._show_parser_errors(src, source_text, parser.errors)
-            if prog:
-                all_statements.extend(prog.statements)
+                print(f"\n{TC.tag('ERROR')} Parse error in file {src}:")
+                print(f"{TC.RED}{e}{TC.RESET}")
+
         if parser_errors_occurred:
             return False
 
@@ -317,7 +320,6 @@ class ProjectBuilder:
             return False
         print(f"  {TC.tag('OK')} Semantic analysis passed")
 
-        # Генерация C++ трансляции
         codegen = CppCodeGen()
         cpp_code = codegen.generate(Program(all_statements))
 
@@ -327,11 +329,10 @@ class ProjectBuilder:
         print(f"  {TC.tag('OK')} Generated C++ bridge -> {out_cpp_path}")
 
         # --------------------------------------------------------------------
-        # ЭТАП 2. СОЗДАНИЕ КАТАЛОГА BUILD И ДИНАМИЧЕСКОГО СПИСКА ELYSOURCES.TXT
+        # ЭТАП 2. СОЗДАНИЕ КАТАЛОГА BUILD И ДИНАМИЧЕСКОГО СПИСКА SOURCES.TXT
         # --------------------------------------------------------------------
-        elysources_path = self.build_dir / 'elysources.txt'
+        sources_txt_path = self.build_dir / 'sources.txt'
         try:
-            # Собираем всё, что SVLM должен скомпилировать и залинковать
             svlm_payload = []
             seen_paths = set()
 
@@ -341,22 +342,22 @@ class ProjectBuilder:
                     seen_paths.add(abs_p)
                     svlm_payload.append(abs_p)
 
-            # 1. Добавляем сгенерированный C++ бридж
             add_to_payload(out_cpp_path)
 
-            # 2. Сканируем папку build на наличие файлов рантайма (ely_runtime.c, ely_gc.c и т.д.)
+            # Разрешенные расширения (включая заголовки .h и .hpp)
+            target_extensions = ('.c', '.cpp', '.cxx', '.cc', '.h', '.hpp')
+
+            # Рекурсивный обход всех вложенных папок внутри build/
             if self.build_dir.exists():
-                for item in self.build_dir.iterdir():
-                    if item.is_file() and item.suffix.lower() in ('.c', '.cpp', '.cxx', '.cc'):
+                for item in self.build_dir.rglob('*'):
+                    if item.is_file() and item.suffix.lower() in target_extensions:
                         add_to_payload(item)
 
-            # 3. Сканируем папку libs проекта на наличие нативных библиотек (.lib, .a, .dll, .so)
             if self.libs_dir.exists():
                 for item in self.libs_dir.rglob('*'):
                     if item.is_file() and item.suffix.lower() in ('.lib', '.a', '.dll', '.so'):
                         add_to_payload(item)
 
-            # 4. Проверяем явные нативные исходники или либы, прописанные в manager.json
             out_cfg = self.config.get('output', {})
             native_sources = out_cfg.get('nativeSources', [])
             for rel_path in native_sources:
@@ -364,14 +365,13 @@ class ProjectBuilder:
                 if native_path.exists() and native_path.is_file():
                     add_to_payload(native_path)
 
-            # Записываем финальный очищенный список абсолютных путей
-            with open(elysources_path, 'w', encoding='utf-8') as f:
+            with open(sources_txt_path, 'w', encoding='utf-8') as f:
                 for path in svlm_payload:
                     f.write(f"{path}\n")
 
-            print(f"  {TC.tag('OK')} Created dynamic manifest for SVLM ({len(svlm_payload)} files) -> {elysources_path}")
+            print(f"  {TC.tag('OK')} Created dynamic manifest ({len(svlm_payload)} files) -> {sources_txt_path}")
         except OSError as e:
-            print(f"\n{TC.tag('ERROR')} Failed to write elysources.txt: {e}")
+            print(f"\n{TC.tag('ERROR')} Failed to write sources.txt: {e}")
             return False
 
         # --------------------------------------------------------------------
@@ -382,28 +382,19 @@ class ProjectBuilder:
             print(f"\n{TC.tag('ERROR')} SVLM.exe or SSDK directory not found!")
             return False
 
-        # Базовая команда для оркестратора
         cmd = [
             str(svlm_bin),
-            self.mode,                  # 'run' или 'build'
-            str(self.project_root),     # Путь к проекту
-            'elysources.txt',           # Список исходников
-            '--sdk', str(ssdk_dir)      # Путь к SSDK
+            self.mode,
+            str(self.project_root),
+            'sources.txt',
+            '--sdk', str(ssdk_dir)
         ]
 
-        # Если мы собираем проект (AOT), нам ОХУЕННО нужно передать имя выходного файла в SVLM
         if self.mode == 'build':
-            # 1. Проверяем, передал ли юзер кастомное имя через CLI (переменная на самом билдере)
             out_name = getattr(self, 'output_name', None)
-            
-            # 2. Если через CLI ничего не передали, вытягиваем имя напрямую из распарсенного manager.json
             if not out_name:
-                # В зависимости от того, как у тебя называется переменная конфига в билдере 
-                # (обычно self.config или self.manager_json), достаем значение по ключам:
                 cfg = getattr(self, 'config', {}) or getattr(self, 'manager_json', {})
                 out_name = cfg.get('output', {}).get('enter', {}).get('name', 'output.exe')
-            
-            # Передаем флаг -o в оркестратор, чтобы линкер LLD собрал всё с правильным именем
             cmd.extend(['-o', str(out_name)])
 
         print(f"\n{TC.tag('SVLM')} Launching core engine...")
@@ -420,12 +411,6 @@ class ProjectBuilder:
         except Exception as e:
             print(f"\n{TC.tag('ERROR')} Failed to invoke SVLM binary: {e}")
             return False
-
-        print(f"\n  {TC.GREEN}{TC.BOLD}SUCCESS: FRONTEND ARTIFACTS GENERATED{TC.RESET}")
-        print(f"  {TC.BOLD}{TC.WHITE}Project Build Dir:{TC.RESET} {self.build_dir}")
-        print(f"  {TC.DIM}Run SVLM driver with args: build \"{self.project_root}\" elysources.txt{TC.RESET}\n")
-
-        return True
 
     def _prepare_runtime(self) -> bool:
         self.build_runtime = self.build_dir
@@ -513,12 +498,10 @@ class ProjectBuilder:
             with open(abs_path, 'r', encoding='utf-8') as f:
                 source = f.read()
 
-            lexer = Lexer(source)
-            parser = Parser(lexer)
-            prog = parser.parse()
-            if parser.errors:
-                for err in parser.errors:
-                    print(f"{TC.YELLOW}{TC.BOLD}  {err}{TC.RESET}")
+            try:
+                prog, _ = self.parser.run(source)
+            except (SyntaxError, RuntimeError) as e:
+                print(f"{TC.YELLOW}{TC.BOLD}  Error parsing {abs_path}: {e}{TC.RESET}")
                 return []
 
             for stmt in prog.statements:
@@ -573,37 +556,6 @@ class ProjectBuilder:
                 print(f"  {TC.DIM}{i}/{total}{TC.RESET} {TC.YELLOW}{msg}{TC.RESET}")
         print()
 
-    def _show_parser_errors(self, src_path: Path, source_text: str, errors: list):
-        lines = source_text.split('\n')
-        src_display = str(src_path)
-        total = len(errors)
-        print(f"\n{TC.tag('ERROR')} {TC.BOLD}{TC.RED}Parser errors ({total}) in {src_display}:{TC.RESET}")
-
-        for i, err in enumerate(errors, 1):
-            err_str = str(err)
-            line = getattr(err, 'line', None)
-            col = getattr(err, 'col', None)
-
-            print(f"\n  {TC.DIM}--- error {i}/{total}{TC.RESET}")
-
-            if line is not None and 1 <= line <= len(lines):
-                source_line = lines[line - 1]
-                if col is not None and col > 0:
-                    print(f"  {TC.DIM}{src_display}:{line}:{col}{TC.RESET}")
-                    print(f"  {TC.DIM}{line:>4} |{TC.RESET}")
-                    print(f"  {TC.DIM}{'':>4} |{TC.RESET} {source_line}")
-                    pointer = ' ' * col + f"{TC.RED}{TC.BOLD}^--- {err_str}{TC.RESET}"
-                    print(f"  {TC.DIM}{'':>4} |{TC.RESET} {pointer}")
-                else:
-                    print(f"  {TC.DIM}{src_display}:{line}{TC.RESET}")
-                    print(f"  {TC.DIM}{line:>4} |{TC.RESET}")
-                    print(f"  {TC.DIM}{'':>4} |{TC.RESET} {source_line}")
-                    print(f"  {TC.DIM}{'':>4} |{TC.RESET} {TC.RED}{TC.BOLD}^--- {err_str}{TC.RESET}")
-            else:
-                print(f"  {TC.DIM}{src_display}{TC.RESET}")
-                print(f"  {TC.RED}{TC.BOLD}{err_str}{TC.RESET}")
-        print()
-
     def _build_module(self) -> bool:
         name = self.config.get('name', 'module')
         out_cfg = self.config.get('output', {})
@@ -641,17 +593,19 @@ class ProjectBuilder:
         print(f"\n{TC.tag('BUILD')} Parsing module sources...")
         all_statements = []
         parser_errors_occurred = False
+
         for src in sources:
             with open(src, 'r', encoding='utf-8') as f:
                 source_text = f.read()
-            lexer = Lexer(source_text)
-            parser = Parser(lexer)
-            prog = parser.parse()
-            if parser.errors:
+            try:
+                ast, _ = self.parser.run(source_text)
+                if ast and hasattr(ast, 'statements'):
+                    all_statements.extend(ast.statements)
+            except (SyntaxError, RuntimeError) as e:
                 parser_errors_occurred = True
-                self._show_parser_errors(src, source_text, parser.errors)
-            if prog:
-                all_statements.extend(prog.statements)
+                print(f"\n{TC.tag('ERROR')} Parse error in file {src}:")
+                print(f"{TC.RED}{e}{TC.RESET}")
+
         if parser_errors_occurred:
             return False
 
@@ -842,12 +796,10 @@ class ProjectBuilder:
             with open(abs_path, 'r', encoding='utf-8') as f:
                 source = f.read()
 
-            lexer = Lexer(source)
-            parser = Parser(lexer)
-            prog = parser.parse()
-            if parser.errors:
-                for err in parser.errors:
-                    print(f"{TC.YELLOW}{TC.BOLD}  {err}{TC.RESET}")
+            try:
+                prog, _ = self.parser.run(source)
+            except (SyntaxError, RuntimeError) as e:
+                print(f"{TC.YELLOW}{TC.BOLD}  Error parsing {abs_path}: {e}{TC.RESET}")
                 return []
 
             for stmt in prog.statements:
