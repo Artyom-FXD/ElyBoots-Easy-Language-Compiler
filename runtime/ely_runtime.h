@@ -54,24 +54,12 @@ typedef unsigned char   ely_ubyte;
 typedef int             ely_bool;
 typedef char*           ely_str;
 
-static inline uint64_t ely_box_float(float f) {
-    uint32_t bits;
-    memcpy(&bits, &f, sizeof(float));
-    return ((uint64_t)bits << 32) | 0x4ULL;
-}
-
-static inline float ely_unbox_float(uint64_t v) {
-    uint32_t bits = (uint32_t)(v >> 32);
-    float f;
-    memcpy(&f, &bits, sizeof(float));
-    return f;
-}
-
 /* ===========================================================================
  *  Ядро Boxing / Unboxing для Double
  * =========================================================================== */
 ely_value ely_value_new_double_boxed(double d);
 double    ely_value_as_double_slow(ely_value v);
+int       ely_get_type(ely_value v);
 
 /* ===========================================================================
  *  Конструкторы Базовых Типов Данных

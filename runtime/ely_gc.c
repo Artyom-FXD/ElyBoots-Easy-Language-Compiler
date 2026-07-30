@@ -150,7 +150,7 @@ typedef enum ElyValuesEnum {
     ely_VALUE_STRING,
     ely_VALUE_ARRAY,
     ely_VALUE_OBJECT
-};
+} ely_values_enum;
 #endif
 
 static void* cage_reserve_segment(size_t size) {

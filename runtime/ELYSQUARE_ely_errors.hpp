@@ -1,15 +1,17 @@
 #pragma once
 
-#include "ELYSQUARE_ely_context.hpp"
-#include "ELYSQUARE_ely_str.hpp"
-#include <string>
-#include <exception>
-#include <sstream>
+// #include "ELYSQUARE_ely_context.hpp"
+#include <csetjmp>
+#include <cstdio>
+#include <cstdlib>
+#include <utility>
+#include <ostream>
 
 namespace ely {
 
-// Categories
-// =========================================================================
+// Forward declaration
+class str;
+
 enum class ErrorType {
     RuntimeError,
     TypeError,
@@ -21,7 +23,6 @@ enum class ErrorType {
     StackOverflow,
     GCError
 };
-
 
 inline const char* error_type_to_string(ErrorType type) {
     switch (type) {
@@ -38,118 +39,84 @@ inline const char* error_type_to_string(ErrorType type) {
     return "UnknownError";
 }
 
-// Errors
-// =========================================================================
-class Error {
-private:
-    ErrorType type_;
-    std::string message_;
-    std::string file_;
-    int line_;
-    
-    // Возможность прикрепить к ошибке произвольный объект Ely (например, если кинули кастомный класс)
-    ely_value custom_payload_ = 0; 
-
-public:
-    Error(ErrorType type, std::string msg) // default constructor
-        : type_(type), 
-          message_(std::move(msg)), 
-          file_(Context::get().current_file()), 
-          line_(Context::get().current_line()) {}
-
-    Error(ErrorType type, std::string msg, std::string file, int line)
-        : type_(type), message_(std::move(msg)), file_(std::move(file)), line_(line) {}
-
-    // --- Перегрузки для ely::str ---
-    Error(ErrorType type, const ely::str& msg)
-        : Error(type, std::string(msg.c_str())) {}
-
-    Error(ErrorType type, const ely::str& msg, const ely::str& file, int line)
-        : Error(type, std::string(msg.c_str()), std::string(file.c_str()), line) {}
-
-    // --- Перегрузки для const char* ---
-    Error(ErrorType type, const char* msg)
-        : Error(type, std::string(msg)) {}
-
-    Error(ErrorType type, const char* msg, const char* file, int line)
-        : Error(type, std::string(msg), std::string(file), line) {}
-
-    // Getters
-    ErrorType type() const { return type_; }
-    const std::string& message() const { return message_; }
-    const std::string& file() const { return file_; }
-    int line() const { return line_; }
-
-    // Custom payload
-    void set_payload(ely_value payload) { custom_payload_ = payload; }
-    ely_value payload() const { return custom_payload_; }
-    bool has_payload() const { return custom_payload_ != 0; }
-
-    // Форматирование красивого трейсбэка
-    std::string format() const {
-        std::ostringstream ss;
-        ss << "\n--- [ELY RUNTIME CRASH] ---\n"
-           << "  File \"" << file_ << "\", line " << line_ << "\n"
-           << "    " << error_type_to_string(type_) << ": " << message_ << "\n"
-           << "---------------------------\n";
-        return ss.str();
-    }
+// -------------------------------------------------------------------------
+// Контекст ошибок (C-style Exception Runtime)
+// -------------------------------------------------------------------------
+struct ErrorData {
+    ErrorType type;
+    const char* message;
+    const char* file;
+    int line;
 };
 
-// =========================================================================
-// Error Exception
-// =========================================================================
-class ErrorException : public std::exception {
-private:
-    Error error_;
-    mutable std::string formatted_what_; // Кэш для std::exception::what()
-
-public:
-    explicit ErrorException(Error err) : error_(std::move(err)) {}
-
-    template <typename StrT>
-    ErrorException(ErrorType type, StrT&& msg)
-        : error_(type, std::forward<StrT>(msg)) {}
-
-    template <typename StrT, typename FileT>
-    ErrorException(ErrorType type, StrT&& msg, FileT&& file, int line)
-        : error_(type, std::forward<StrT>(msg), std::forward<FileT>(file), line) {}
-
-    const Error& error() const noexcept { return error_; }
-
-    const char* what() const noexcept override {
-        try {
-            if (formatted_what_.empty()) {
-                formatted_what_ = error_.format();
-            }
-            return formatted_what_.c_str();
-        } catch (...) {
-            return "Ely Exception occurred (formatting failed)";
-        }
-    }
+struct ExceptionFrame {
+    ::std::jmp_buf env;
+    ExceptionFrame* prev = nullptr;
 };
 
-// =========================================================================
-// shortcuts
-// =========================================================================
-inline void throw_type_error(const std::string& msg) {
-    throw ErrorException(ErrorType::TypeError, msg);
+inline thread_local ExceptionFrame* g_current_frame = nullptr;
+inline thread_local ErrorData g_last_error{};
+
+// Замена std::throw_exception / throw
+[[noreturn]] inline void raise(ErrorType type, const char* msg, const char* file = nullptr, int line = 0) {
+    g_last_error = { type, msg, file, line };
+
+    if (g_current_frame) {
+        ::std::longjmp(g_current_frame->env, 1);
+    } else {
+        ::std::fprintf(stderr,
+            "\n--- [UNHANDLED ELY CRASH] ---\n"
+            "  File \"%s\", line %d\n"
+            "    %s: %s\n"
+            "-----------------------------\n",
+            file ? file : "unknown", line,
+            error_type_to_string(type),
+            msg ? msg : ""
+        );
+        ::std::abort();
+    }
 }
 
-inline void throw_value_error(const std::string& msg) {
-    throw ErrorException(ErrorType::ValueError, msg);
+// -------------------------------------------------------------------------
+// Шорткаты для возбуждения ошибок через raise(...)
+// -------------------------------------------------------------------------
+inline void raise_type_error(const char* msg, const char* file = nullptr, int line = 0) {
+    raise(ErrorType::TypeError, msg, file, line);
 }
 
-inline void throw_index_error(const std::string& msg) {
-    throw ErrorException(ErrorType::IndexError, msg);
+inline void raise_value_error(const char* msg, const char* file = nullptr, int line = 0) {
+    raise(ErrorType::ValueError, msg, file, line);
 }
 
-inline void throw_key_error(const std::string& msg) {
-    throw ErrorException(ErrorType::KeyError, msg);
+inline void raise_index_error(const char* msg, const char* file = nullptr, int line = 0) {
+    raise(ErrorType::IndexError, msg, file, line);
 }
 
-inline void throw_name_error(const std::string& msg) {
-    throw ErrorException(ErrorType::NameError, msg);
+inline void raise_syntax_error(const char* msg, const char* file = nullptr, int line = 0) {
+    raise(ErrorType::SyntaxError, msg, file, line);
+}
+
+inline void raise_runtime_error(const char* msg, const char* file = nullptr, int line = 0) {
+    raise(ErrorType::RuntimeError, msg, file, line);
+}
+
+inline ::std::ostream& operator<<(::std::ostream& os, const ErrorData& err) {
+    return os << err.message; // или err.msg, в зависимости от имени поля
 }
 
 } // namespace ely
+
+// -------------------------------------------------------------------------
+// Макросы контроля выполнения: asafe / except
+// -------------------------------------------------------------------------
+
+// Безопасный блок (аналог try)
+#define asafe \
+    for (::ely::ExceptionFrame _frame{ {}, ::ely::g_current_frame }, *_once = (::ely::ExceptionFrame*)(::ely::g_current_frame = &_frame, (void*)1); \
+         _once; \
+         ::ely::g_current_frame = _frame.prev, _once = nullptr) \
+        if (setjmp(_frame.env) == 0)
+
+// Блок перехвата (аналог catch), возвращает структуру ::ely::ErrorData
+#define except(err_var) \
+        else for (::ely::ErrorData err_var = ::ely::g_last_error, *_once_c = (::ely::ErrorData*)1; _once_c; _once_c = nullptr)

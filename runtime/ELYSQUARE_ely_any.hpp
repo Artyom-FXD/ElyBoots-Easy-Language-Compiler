@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ely_dynamic.hpp"
+#include "ELYSQUARE_ely_errors.hpp"
 #include <iostream>
 #include <type_traits>
 
@@ -20,7 +21,7 @@ public:
     constexpr any(ely_value raw) noexcept : raw_(raw) {}
 
     any(bool val) noexcept : raw_(val ? ELY_VAL_TRUE : ELY_VAL_FALSE) {}
-    any(std::nullptr_t) noexcept : raw_(ELY_VAL_NULL) {}
+    any(::std::nullptr_t) noexcept : raw_(ELY_VAL_NULL) {}
 
     any(int64_t val) {
         if (val > ELY_INT61_MAX || val < ELY_INT61_MIN) {
@@ -100,6 +101,10 @@ public:
     const char* c_str() const;
     str as_str() const;
 
+    ::std::string as_string() const {
+        return ::std::string(c_str());
+    }
+
     explicit operator int64_t() const { return as_int(); }
     explicit operator float() const   { return as_float(); }
     explicit operator double() const  { return as_double(); }
@@ -127,9 +132,14 @@ public:
         return raw_ == other.raw_;
     }
 
+    template <typename T>
+    T as() const {
+        return static_cast<T>(*this);
+    }
+
     bool operator!=(const any& other) const { return !(*this == other); }
 
-    friend std::ostream& operator<<(std::ostream& os, const any& val) {
+    friend ::std::ostream& operator<<(::std::ostream& os, const any& val) {
         if (val.is_null()) {
             os << "null";
         } else if (val.is_bool()) {
@@ -158,14 +168,14 @@ public:
 
 #include "ELYSQUARE_ely_str.hpp"
 #include "ELYSQUARE_ely_collections.hpp"
-#include "ELYSQUARE_ely_function.hpp"
+// #include "ELYSQUARE_ely_function.hpp"
 #include "ELYSQUARE_ely_errors.hpp"
 
 namespace ely {
 
 // Реализация конструкторов после того, как типы стали полными
 inline any::any(const ely::str& s) noexcept : raw_(s.raw_value()) {}
-inline any::any(const function& fn) noexcept : raw_(fn.raw()) {}
+// inline any::any(const function& fn) noexcept : raw_(fn.raw()) {}
 inline any::any(const ely::array& arr) noexcept : raw_(arr.raw()) {}
 inline any::any(const ely::dict& d) noexcept : raw_(d.raw()) {}
 
@@ -173,30 +183,30 @@ inline int64_t any::as_int() const {
     if (is_int()) return ely_unbox_int(raw_);
     if (is_heap_double()) return static_cast<int64_t>(static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value);
     if (is_float()) return static_cast<int64_t>(ely_unbox_float(raw_));
-    throw ErrorException(ErrorType::TypeError, "TypeError: Cannot cast value to Integer");
+    ely::raise(ErrorType::TypeError, "TypeError: Cannot cast value to Integer");
 }
 
 inline float any::as_float() const {
     if (is_float()) return ely_unbox_float(raw_);
     if (is_int()) return static_cast<float>(ely_unbox_int(raw_));
     if (is_heap_double()) return static_cast<float>(static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value);
-    throw ErrorException(ErrorType::TypeError, "TypeError: Cannot cast value to Float");
+    ely::raise(ErrorType::TypeError, "TypeError: Cannot cast value to Float");
 }
 
 inline double any::as_double() const {
     if (is_heap_double()) return static_cast<ElyHeapDouble*>(ely_unbox_ptr(raw_))->value;
     if (is_int()) return static_cast<double>(ely_unbox_int(raw_));
     if (is_float()) return static_cast<double>(ely_unbox_float(raw_));
-    throw ErrorException(ErrorType::TypeError, "TypeError: Cannot cast value to Double");
+    ely::raise(ErrorType::TypeError, "TypeError: Cannot cast value to Double");
 }
 
 inline bool any::as_bool() const {
-    if (!is_bool()) throw ErrorException(ErrorType::TypeError, "TypeError: Value is not a Boolean");
+    if (!is_bool()) ely::raise(ErrorType::TypeError, "TypeError: Value is not a Boolean");
     return raw_ == ELY_VAL_TRUE;
 }
 
 inline const char* any::c_str() const {
-    if (!is_string()) throw ErrorException(ErrorType::TypeError, "TypeError: Value is not a String");
+    if (!is_string()) ely::raise(ErrorType::TypeError, "TypeError: Value is not a String");
     return ely_value_to_string(raw_);
 }
 
@@ -208,8 +218,8 @@ inline any::operator str() const {
     return as_str();
 }
 
-inline any::operator ely::function() const {
-    return as_function();
-}
+// inline any::operator ely::function() const {
+//     return as_function();
+// }
 
 } // namespace ely

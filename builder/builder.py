@@ -80,6 +80,21 @@ class ProjectBuilder:
         # Инициализация нового Earley-парсера
         self.parser = EarleyParser(ely_grammar)
 
+    def _parse_ely_file(self, src_path: Path) -> Optional[List]:
+        """Вынесенная функция: считывает и прогоняет один файл .ely через парсер,
+        возвращая список его AST-инструкций (statements) или None при ошибке."""
+        try:
+            with open(src_path, 'r', encoding='utf-8') as f:
+                source_text = f.read()
+            ast, _ = self.parser.run(source_text)
+            if ast and hasattr(ast, 'statements'):
+                return ast.statements
+            return []
+        except (SyntaxError, RuntimeError) as e:
+            print(f"\n{TC.tag('ERROR')} Parse error in file {src_path}:")
+            print(f"{TC.RED}{e}{TC.RESET}")
+            return None
+
     def _get_svlm_paths(self) -> Tuple[Optional[Path], Optional[Path]]:
         """Ищет SVLM.exe строго в двух указанных местах относительно корня компилятора."""
         path_spruce = _BASE_DIR / 'Spruce' / 'SVLM.exe'
@@ -289,17 +304,11 @@ class ProjectBuilder:
         parser_errors_occurred = False
 
         for src in sources:
-            with open(src, 'r', encoding='utf-8') as f:
-                source_text = f.read()
-            try:
-                # Запуск единого пайплайна парсера (препроцессор + токенизация + CST -> AST)
-                ast, _ = self.parser.run(source_text)
-                if ast and hasattr(ast, 'statements'):
-                    all_statements.extend(ast.statements)
-            except (SyntaxError, RuntimeError) as e:
+            stmts = self._parse_ely_file(src)
+            if stmts is None:
                 parser_errors_occurred = True
-                print(f"\n{TC.tag('ERROR')} Parse error in file {src}:")
-                print(f"{TC.RED}{e}{TC.RESET}")
+            else:
+                all_statements.extend(stmts)
 
         if parser_errors_occurred:
             return False
@@ -344,10 +353,8 @@ class ProjectBuilder:
 
             add_to_payload(out_cpp_path)
 
-            # Разрешенные расширения (включая заголовки .h и .hpp)
             target_extensions = ('.c', '.cpp', '.cxx', '.cc', '.h', '.hpp')
 
-            # Рекурсивный обход всех вложенных папок внутри build/
             if self.build_dir.exists():
                 for item in self.build_dir.rglob('*'):
                     if item.is_file() and item.suffix.lower() in target_extensions:
@@ -495,16 +502,11 @@ class ProjectBuilder:
 
             collected[abs_path] = current
 
-            with open(abs_path, 'r', encoding='utf-8') as f:
-                source = f.read()
-
-            try:
-                prog, _ = self.parser.run(source)
-            except (SyntaxError, RuntimeError) as e:
-                print(f"{TC.YELLOW}{TC.BOLD}  Error parsing {abs_path}: {e}{TC.RESET}")
+            stmts = self._parse_ely_file(abs_path)
+            if stmts is None:
                 return []
 
-            for stmt in prog.statements:
+            for stmt in stmts:
                 if isinstance(stmt, UsingDirective):
                     module = stmt.module
                     if module.startswith('"') and module.endswith('"'):
@@ -595,16 +597,11 @@ class ProjectBuilder:
         parser_errors_occurred = False
 
         for src in sources:
-            with open(src, 'r', encoding='utf-8') as f:
-                source_text = f.read()
-            try:
-                ast, _ = self.parser.run(source_text)
-                if ast and hasattr(ast, 'statements'):
-                    all_statements.extend(ast.statements)
-            except (SyntaxError, RuntimeError) as e:
+            stmts = self._parse_ely_file(src)
+            if stmts is None:
                 parser_errors_occurred = True
-                print(f"\n{TC.tag('ERROR')} Parse error in file {src}:")
-                print(f"{TC.RED}{e}{TC.RESET}")
+            else:
+                all_statements.extend(stmts)
 
         if parser_errors_occurred:
             return False
@@ -793,16 +790,11 @@ class ProjectBuilder:
                 continue
             collected[abs_path] = current
 
-            with open(abs_path, 'r', encoding='utf-8') as f:
-                source = f.read()
-
-            try:
-                prog, _ = self.parser.run(source)
-            except (SyntaxError, RuntimeError) as e:
-                print(f"{TC.YELLOW}{TC.BOLD}  Error parsing {abs_path}: {e}{TC.RESET}")
+            stmts = self._parse_ely_file(abs_path)
+            if stmts is None:
                 return []
 
-            for stmt in prog.statements:
+            for stmt in stmts:
                 if isinstance(stmt, UsingDirective):
                     module = stmt.module
                     if module.startswith('"') and module.endswith('"'):

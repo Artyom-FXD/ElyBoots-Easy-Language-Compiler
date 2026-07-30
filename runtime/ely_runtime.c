@@ -18,7 +18,7 @@ typedef enum ElyValuesEnum {
     ely_VALUE_STRING,
     ely_VALUE_ARRAY,
     ely_VALUE_OBJECT
-};
+} ely_values_enum;
 #endif
 
 #ifndef ELY_GC_OBJ_TYPES_DEFINED
@@ -49,6 +49,43 @@ ely_value ely_value_new_double_boxed(double d) {
 double ely_value_as_double_slow(ely_value v) {
     ely_boxed_double_t* obj = (ely_boxed_double_t*)ELY_UNBOX_PTR(v);
     return obj->value;
+}
+
+int ely_get_type(ely_value v) {
+    // 1. Проверка специальных / инлайн-значений
+    if (v == ELY_VAL_NULL) return ely_VALUE_NULL;
+    if (v == ELY_VAL_TRUE || v == ELY_VAL_FALSE) return ely_VALUE_BOOL;
+    
+#ifdef ELY_IS_BOOL
+    if (ELY_IS_BOOL(v)) return ely_VALUE_BOOL;
+#endif
+
+    if (ELY_IS_INT(v)) return ely_VALUE_INT;
+    if (ELY_IS_FLOAT(v)) return ely_VALUE_DOUBLE;
+    if (ely_is_immediate_str(v)) return ely_VALUE_STRING;
+
+    // 2. Проверка объектов в куче (Heap Objects)
+    if (ely_is_ptr(v)) {
+        void* ptr = ely_unbox_ptr(v);
+        if (!ptr) return ely_VALUE_NULL;
+
+        switch (get_heap_obj_type(ptr)) {
+            case GC_OBJ_STRING: 
+                return ely_VALUE_STRING;
+            case GC_OBJ_ARR:    
+                return ely_VALUE_ARRAY;
+            case GC_OBJ_DICT:   
+                return ely_VALUE_OBJECT;
+            case GC_OBJ_DOUBLE:
+            case GC_OBJ_VALUE:  
+                // ely_boxed_double_t выделяется с типом GC_OBJ_VALUE
+                return ely_VALUE_DOUBLE;
+            default: 
+                break;
+        }
+    }
+
+    return ely_VALUE_NULL;
 }
 
 /* ===========================================================================

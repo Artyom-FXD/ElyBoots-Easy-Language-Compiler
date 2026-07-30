@@ -3,7 +3,7 @@
 #include "ELYSQUARE_ely_str.hpp"
 #include "ely_dynamic.hpp"
 #include "ELYSQUARE_ely_any.hpp"
-#include "ELYSQUARE_ely_errors.hpp" // Прямо подтягиваем наш новый менеджер ошибок!
+#include "ELYSQUARE_ely_errors.hpp"
 
 #include <string>
 #include <vector>
@@ -26,23 +26,23 @@ public:
     array() {
         raw_ = ::arr_new();
         if (!raw_) {
-            throw ErrorException(ErrorType::GCError, "GC allocation failed: Failed to allocate young array heap-object");
+            ely::raise(ErrorType::GCError, "GC allocation failed: Failed to allocate young array heap-object");
         }
     }
 
     explicit array(::arr* a) : raw_(a) {
         if (!raw_) {
-            throw ErrorException(ErrorType::ValueError, "ValueError: Array initialization pointer cannot be null");
+            ely::raise(ErrorType::ValueError, "ValueError: Array initialization pointer cannot be null");
         }
     }
 
     explicit array(ely_value val) {
         if (!ely_is_ptr(val)) {
-            throw ErrorException(ErrorType::TypeError, "TypeError: Expected GC heap-pointer for Array creation");
+            ely::raise(ErrorType::TypeError, "TypeError: Expected GC heap-pointer for Array creation");
         }
         auto* obj = static_cast<ElyHeapObject*>(ely_as_ptr(val));
         if (!obj || static_cast<uint8_t>(obj->type) != ELY_HEAP_ARRAY) {
-            throw ErrorException(ErrorType::TypeError, "TypeError: Passed ely_value is not a dynamic Array!");
+            ely::raise(ErrorType::TypeError, "TypeError: Passed ely_value is not a dynamic Array!");
         }
         raw_ = reinterpret_cast<::arr*>(obj);
     }
@@ -55,34 +55,34 @@ public:
     
     any pop() {
         if (empty()) {
-            throw ErrorException(ErrorType::IndexError, "IndexError: Pop from empty array");
+            ely::raise(ErrorType::IndexError, "IndexError: Pop from empty array");
         }
         return any(::arr_pop_value(raw_));
     }
 
     any get(size_t index) const {
         if (index >= size()) {
-            throw ErrorException(ErrorType::IndexError, "IndexError: Array index '" + std::to_string(index) + "' out of range (size is " + std::to_string(size()) + ")");
+            ely::raise(ErrorType::IndexError, fstr("IndexError: Array index \'", ::std::to_string(index), "\' out of range (size is ", ::std::to_string(size()), ")").c_str());
         }
         return any(::arr_get(raw_, index));
     }
 
     void set(size_t index, const any& val) {
         if (index >= size()) {
-            throw ErrorException(ErrorType::IndexError, "IndexError: Cannot write to index '" + std::to_string(index) + "' (size is " + std::to_string(size()) + ")");
+            ely::raise(ErrorType::IndexError, fstr("IndexError: Cannot write to index \'", ::std::to_string(index), "\' (size is ", ::std::to_string(size()), ")").c_str());
         }
         ::arr_set(raw_, index, val.raw());
     }
 
     void insert(size_t index, const any& val) {
         if (::arr_insert(raw_, index, val.raw()) != 0) {
-            throw ErrorException(ErrorType::IndexError, "IndexError: Insertion index '" + std::to_string(index) + "' is out of bounds");
+            ely::raise(ErrorType::IndexError, fstr("IndexError: Insertion index \'", ::std::to_string(index) , "\' is out of bounds").c_str());
         }
     }
 
     void remove(size_t index) {
         if (::arr_remove_index(raw_, index) != 0) {
-            throw ErrorException(ErrorType::IndexError, "IndexError: Deletion index '" + std::to_string(index) + "' is out of bounds");
+            ely::raise(ErrorType::IndexError, fstr("IndexError: Deletion index '" + ::std::to_string(index) + "\' is out of bounds").c_str());
         }
     }
 
@@ -101,7 +101,7 @@ public:
 
     Proxy operator[](size_t index) {
         if (index >= size()) {
-            throw ErrorException(ErrorType::IndexError, "IndexError: Access index '" + std::to_string(index) + "' out of bounds");
+            ely::raise(ErrorType::IndexError, fstr("IndexError: Access index '", ::std::to_string(index), "' out of bounds").c_str());
         }
         return Proxy(raw_, index);
     }
@@ -111,39 +111,39 @@ public:
     }
 
     template <typename T>
-    std::vector<T> to_static_vector() const {
-        std::vector<T> result;
+    ::std::vector<T> to_static_vector() const {
+        ::std::vector<T> result;
         result.reserve(size());
 
         for (size_t i = 0; i < size(); ++i) {
             ely::any item = get(i);
 
-            if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, int>) {
+            if constexpr (std::is_same_v<T, int64_t> || ::std::is_same_v<T, int>) {
                 if (!item.is_number()) {
-                    throw ErrorException(ErrorType::TypeError, "TypeError: Expected numeric element for static integer array conversion at index " + std::to_string(i));
+                    ely::raise(ErrorType::TypeError, fstr("TypeError: Expected numeric element for static integer array conversion at index ", ::std::to_string(i)).c_str());
                 }
                 result.push_back(static_cast<T>(item.as_int()));
             } 
-            else if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+            else if constexpr (std::is_same_v<T, double> || ::std::is_same_v<T, float>) {
                 if (!item.is_number()) {
-                    throw ErrorException(ErrorType::TypeError, "TypeError: Expected numeric element for static floating-point array conversion at index " + std::to_string(i));
+                    ely::raise(ErrorType::TypeError, fstr("TypeError: Expected numeric element for static floating-point array conversion at index ", ::std::to_string(i)).c_str());
                 }
                 result.push_back(static_cast<T>(item.as_double()));
             } 
-            else if constexpr (std::is_same_v<T, std::string>) {
+            else if constexpr (std::is_same_v<T, ::std::string>) {
                 if (!item.is_string()) {
-                    throw ErrorException(ErrorType::TypeError, "TypeError: Expected string element at index " + std::to_string(i));
+                    ely::raise(ErrorType::TypeError, fstr("TypeError: Expected string element at index ", ::std::to_string(i)).c_str());
                 }
-                result.push_back(item.as_string());
+                result.push_back(::std::string(item.c_str()));
             } 
             else if constexpr (std::is_same_v<T, bool>) {
                 if (!item.is_bool()) {
-                    throw ErrorException(ErrorType::TypeError, "TypeError: Expected boolean element at index " + std::to_string(i));
+                    ely::raise(ErrorType::TypeError, fstr("TypeError: Expected boolean element at index " + ::std::to_string(i)).c_str());
                 }
                 result.push_back(item.as_bool());
             } 
             else {
-                result.push_back(item.as<T>());
+                result.push_back(static_cast<T>(item));
             }
         }
         return result;
@@ -168,23 +168,23 @@ public:
     dict() {
         raw_ = ::dict_new(::dict_hash_str, ::dict_cmp_str);
         if (!raw_) {
-            throw ErrorException(ErrorType::GCError, "GC allocation failed: Failed to allocate dictionary object in heap");
+            ely::raise(ErrorType::GCError, "GC allocation failed: Failed to allocate dictionary object in heap");
         }
     }
 
     explicit dict(::dict* d) : raw_(d) {
         if (!raw_) {
-            throw ErrorException(ErrorType::ValueError, "ValueError: Dict initialization pointer cannot be null");
+            ely::raise(ErrorType::ValueError, "ValueError: Dict initialization pointer cannot be null");
         }
     }
 
     explicit dict(ely_value val) {
         if (!ely_is_ptr(val)) {
-            throw ErrorException(ErrorType::TypeError, "TypeError: Expected GC heap-pointer for Dict creation");
+            ely::raise(ErrorType::TypeError, "TypeError: Expected GC heap-pointer for Dict creation");
         }
         auto* obj = static_cast<ElyHeapObject*>(ely_as_ptr(val));
         if (!obj || static_cast<uint8_t>(obj->type) != ELY_HEAP_DICT) {
-            throw ErrorException(ErrorType::TypeError, "TypeError: Passed ely_value is not a dynamic Dict!");
+            ely::raise(ErrorType::TypeError, "TypeError: Passed ely_value is not a dynamic Dict!");
         }
         raw_ = reinterpret_cast<::dict*>(obj);
     }
@@ -198,7 +198,7 @@ public:
     any get(const any& key) const {
         // Если ключа нет — генерируем KeyError
         if (!has(key)) {
-            throw ErrorException(ErrorType::KeyError, "KeyError: Key not found in dynamic dictionary");
+            ely::raise(ErrorType::KeyError, "KeyError: Key not found in dynamic dictionary");
         }
         return any(::dict_get(raw_, key.raw()));
     }
@@ -209,7 +209,7 @@ public:
 
     void remove(const any& key) {
         if (!has(key)) {
-            throw ErrorException(ErrorType::KeyError, "KeyError: Cannot delete non-existent key from dictionary");
+            ely::raise(ErrorType::KeyError, "KeyError: Cannot delete non-existent key from dictionary");
         }
         ::dict_delete(raw_, key.raw());
     }
@@ -255,9 +255,9 @@ class Iterator {
         }
 
         // Явное приведение сырых данных ноды к ely_value гарантирует работу итератора
-        std::pair<ely::any, ely::any> operator*() const {
+        ::std::pair<ely::any, ely::any> operator*() const {
             if (!current_) {
-                throw ErrorException(ErrorType::IndexError, "IndexError: Dictionary iterator out of bounds");
+                ely::raise(ErrorType::IndexError, "IndexError: Dictionary iterator out of bounds");
             }
             return { 
                 ely::any(static_cast<ely_value>(current_->key)), 
@@ -279,42 +279,42 @@ class Iterator {
     // КОНВЕРТЕР С ВАЛИДАЦИЕЙ
     // ==========================================
     template <typename K, typename V>
-    std::unordered_map<K, V> to_static_map() const {
-        std::unordered_map<K, V> result;
+    ::std::unordered_map<K, V> to_static_map() const {
+        ::std::unordered_map<K, V> result;
 
         for (auto [key, val] : *this) {
             K safe_key;
             V safe_value;
 
             // 1. Валидация ключа
-            if constexpr (std::is_same_v<K, std::string>) {
-                if (!key.is_string()) throw ErrorException(ErrorType::TypeError, "TypeError: Dictionary contains a non-string key where static std::string key was expected");
-                safe_key = key.as_string();
+            if constexpr (std::is_same_v<K, ::std::string>) {
+                if (!key.is_string()) ely::raise(ErrorType::TypeError, "TypeError: Dictionary contains a non-string key where static ::std::string key was expected");
+                safe_key = ::std::string(key.c_str()); // Replaced key.as_string()
             } else if constexpr (std::is_same_v<K, ely::str>) {
-                if (!key.is_string()) throw ErrorException(ErrorType::TypeError, "TypeError: Dictionary contains a non-string key where static ely::str key was expected");
+                if (!key.is_string()) ely::raise(ErrorType::TypeError, "TypeError: Dictionary contains a non-string key where static ely::str key was expected");
                 safe_key = key.as_str();
-            } else if constexpr (std::is_same_v<K, int64_t> || std::is_same_v<K, int>) {
-                if (!key.is_int()) throw ErrorException(ErrorType::TypeError, "TypeError: Dictionary contains a non-integer key where static numeric key was expected");
+            } else if constexpr (std::is_same_v<K, int64_t> || ::std::is_same_v<K, int>) {
+                if (!key.is_int()) ely::raise(ErrorType::TypeError, "TypeError: Dictionary contains a non-integer key where static numeric key was expected");
                 safe_key = static_cast<K>(key.as_int());
             } else {
                 static_assert(false, "Unsupported key type for static map conversion");
             }
 
             // 2. Валидация значения
-            if constexpr (std::is_same_v<V, int64_t> || std::is_same_v<V, int>) {
-                if (!val.is_number()) throw ErrorException(ErrorType::TypeError, "TypeError: Value inside dictionary is not numeric");
+            if constexpr (std::is_same_v<V, int64_t> || ::std::is_same_v<V, int>) {
+                if (!val.is_number()) ely::raise(ErrorType::TypeError, "TypeError: Value inside dictionary is not numeric");
                 safe_value = static_cast<V>(val.as_int());
-            } else if constexpr (std::is_same_v<V, double> || std::is_same_v<V, float>) {
-                if (!val.is_number()) throw ErrorException(ErrorType::TypeError, "TypeError: Value inside dictionary is not numeric");
+            } else if constexpr (std::is_same_v<V, double> || ::std::is_same_v<V, float>) {
+                if (!val.is_number()) ely::raise(ErrorType::TypeError, "TypeError: Value inside dictionary is not numeric");
                 safe_value = static_cast<V>(val.as_double());
-            } else if constexpr (std::is_same_v<V, std::string>) {
-                if (!val.is_string()) throw ErrorException(ErrorType::TypeError, "TypeError: Value inside dictionary is not a String");
+            } else if constexpr (std::is_same_v<V, ::std::string>) {
+                if (!val.is_string()) ely::raise(ErrorType::TypeError, "TypeError: Value inside dictionary is not a String");
                 safe_value = val.as_string();
             } else if constexpr (std::is_same_v<V, ely::str>) {
-                if (!val.is_string()) throw ErrorException(ErrorType::TypeError, "TypeError: Value inside dictionary is not an Ely-string");
+                if (!val.is_string()) ely::raise(ErrorType::TypeError, "TypeError: Value inside dictionary is not an Ely-string");
                 safe_value = val.as_str();
             } else if constexpr (std::is_same_v<V, bool>) {
-                if (!val.is_bool()) throw ErrorException(ErrorType::TypeError, "TypeError: Value inside dictionary is not Boolean");
+                if (!val.is_bool()) ely::raise(ErrorType::TypeError, "TypeError: Value inside dictionary is not Boolean");
                 safe_value = val.as_bool();
             } else {
                 safe_value = val.as<V>();

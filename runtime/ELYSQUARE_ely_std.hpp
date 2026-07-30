@@ -81,8 +81,8 @@ inline ely::str get_executable_directory() {
 #if defined(_WIN32) || defined(_WIN64)
     char buffer[MAX_PATH];
     GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    char* pos = ::std::strrchr(buffer, '\\');
-    if (!pos) pos = ::std::strrchr(buffer, '/');
+    char* pos = const_cast<char*>(::std::strrchr(buffer, '\\'));
+    if (!pos) pos = const_cast<char*>(::std::strrchr(buffer, '/'));
     if (pos) *pos = '\0';
     return ely::str(buffer);
 #else
@@ -90,7 +90,7 @@ inline ely::str get_executable_directory() {
     ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
     if (len != -1) {
         buffer[len] = '\0';
-        char* pos = ::std::strrchr(buffer, '/');
+        char* pos = const_cast<char*>(::std::strrchr(buffer, '/'));
         if (pos) *pos = '\0';
         return ely::str(buffer);
     }
@@ -258,6 +258,15 @@ struct console {
         detail::stream_colors(buf.data());
     }
 
+    template <typename... Args>
+    static inline void print(Args&&... args) {
+        ::std::stringstream ss;
+
+        (ss << ... << ::std::forward<Args>(args));
+
+        detail::stream_colors(ss.str().c_str());
+    }
+
     // Returns user's text as a str
     static inline ely::str input(const char* prompt = nullptr) {
         if (prompt) {
@@ -317,7 +326,7 @@ namespace detail {
                     buf.push_back(c);
                 }
             }
-            throw ErrorException(ErrorType::SyntaxError, "JSON Parser Error: Unterminated string literal");
+            ely::raise(ErrorType::SyntaxError, "JSON Parser Error: Unterminated string literal");
         }
 
         any parse_number() {
@@ -357,15 +366,15 @@ namespace detail {
                 ely::dict d;
                 if (peek() == '}') { get(); return any(d); }
                 while (true) {
-                    if (peek() != '"') throw ErrorException(ErrorType::SyntaxError, "JSON Parser Error: Keys must be strings");
+                    if (peek() != '"') ely::raise(ErrorType::SyntaxError, "JSON Parser Error: Keys must be strings");
                     ely::str key = parse_string();
-                    if (get() != ':') throw ErrorException(ErrorType::SyntaxError, "JSON Parser Error: Expected ':' separator");
+                    if (get() != ':') ely::raise(ErrorType::SyntaxError, "JSON Parser Error: Expected ':' separator");
                     any val = parse_value();
                     d.set(any(key.raw_value()), val);
                     char next = peek();
                     if (next == '}') { get(); break; }
                     if (next == ',') { get(); continue; }
-                    throw ErrorException(ErrorType::SyntaxError, "JSON Parser Error: Expected ',' or '}'");
+                    ely::raise(ErrorType::SyntaxError, "JSON Parser Error: Expected ',' or '}'");
                 }
                 return any(d);
             }
@@ -378,7 +387,7 @@ namespace detail {
                     char next = peek();
                     if (next == ']') { get(); break; }
                     if (next == ',') { get(); continue; }
-                    throw ErrorException(ErrorType::SyntaxError, "JSON Parser Error: Expected ',' or ']'");
+                    ely::raise(ErrorType::SyntaxError, "JSON Parser Error: Expected ',' or ']'");
                 }
                 return any(arr);
             }
@@ -387,7 +396,7 @@ namespace detail {
             if (c == 'n' && ::std::strncmp(src_ + pos_, "null", 4) == 0) { pos_ += 4; return any(nullptr); }
             if (::std::isdigit(static_cast<unsigned char>(c)) || c == '-') return parse_number();
             
-            throw ErrorException(ErrorType::SyntaxError, "JSON Parser Error: Illegal character token");
+            ely::raise(ErrorType::SyntaxError, "JSON Parser Error: Illegal character token");
         }
     };
 
@@ -548,7 +557,7 @@ public:
         handle_ = fopen(path.c_str(), mode.c_str());
 #endif
         if (!handle_) {
-            throw ErrorException(ErrorType::RuntimeError, "File I/O Error: Failed to open targeted path");
+            ely::raise(ErrorType::RuntimeError, "File I/O Error: Failed to open targeted path");
         }
     }
 
@@ -564,13 +573,13 @@ public:
 
     // Changes contents of a File
     void write(const ely::str& data) {
-        if (!handle_) throw ErrorException(ErrorType::RuntimeError, "File I/O Error: Stream closed");
+        if (!handle_) ely::raise(ErrorType::RuntimeError, "File I/O Error: Stream closed");
         fwrite(data.c_str(), 1, data.length(), handle_);
     }
 
     // Reads all the content from file
     ely::str read_all() {
-        if (!handle_) throw ErrorException(ErrorType::RuntimeError, "File I/O Error: Stream closed");
+        if (!handle_) ely::raise(ErrorType::RuntimeError, "File I/O Error: Stream closed");
         fseek(handle_, 0, SEEK_END);
         long size = ftell(handle_);
         fseek(handle_, 0, SEEK_SET);
@@ -597,7 +606,7 @@ public:
         handle_ = dlopen(path.c_str(), RTLD_NOW);
 #endif
         if (!handle_) {
-            throw ErrorException(ErrorType::RuntimeError, "FFI Error: Failed to bind external dynamic library");
+            ely::raise(ErrorType::RuntimeError, "FFI Error: Failed to bind external dynamic library");
         }
     }
 
@@ -617,7 +626,7 @@ public:
 
     // Get a function pointer from this dynamic lib
     void* get_function(const ely::str& name) {
-        if (!handle_) throw ErrorException(ErrorType::RuntimeError, "FFI Error: Library is closed");
+        if (!handle_) ely::raise(ErrorType::RuntimeError, "FFI Error: Library is closed");
 #if defined(_WIN32) || defined(_WIN64)
         return (void*)GetProcAddress((HMODULE)handle_, name.c_str());
 #else

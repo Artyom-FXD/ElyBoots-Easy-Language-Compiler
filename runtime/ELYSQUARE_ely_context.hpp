@@ -15,7 +15,7 @@ private:
     ely::dict globals_;
 
     // Локация для красивых стектрейсов
-    std::string current_file_ = "main.ely";
+    ::std::string current_file_ = "main.ely";
     int current_line_ = 1;
 
     // Конструктор приватный (синглтон)
@@ -30,7 +30,7 @@ private:
         if (globals_.has(key)) {
             return globals_.get(key);
         }
-        throw std::runtime_error("NameError: Глобальная переменная '" + std::string(name) + "' не найдена!");
+        ely::raise(ely::ErrorType::RuntimeError, fstr("NameError: Global variable '", ::std::string(name), "' not found!").c_str());
     }
 
     void set_global_impl(const char* name, const any& val) {
@@ -58,7 +58,7 @@ public:
     // =========================================================================
     
     // 1. Плюсовый std::string
-    any get_global(const std::string& name) const {
+    any get_global(const ::std::string& name) const {
         return get_global_impl(name.c_str());
     }
 
@@ -69,7 +69,7 @@ public:
         if (globals_.has(key)) {
             return globals_.get(key);
         }
-        throw std::runtime_error("NameError: Глобальная переменная '" + std::string(name.c_str()) + "' не найдена!");
+        ely::raise(ely::ErrorType::NameError, fstr("NameError: Global variable '", ::std::string(name.c_str()), "' not found!").c_str());
     }
 
     // 3. Быстрый сырой литерал const char* (без оверхеда на аллокации строк)
@@ -82,7 +82,7 @@ public:
     // =========================================================================
 
     // 1. Плюсовый std::string
-    void set_global(const std::string& name, const any& val) {
+    void set_global(const ::std::string& name, const any& val) {
         set_global_impl(name.c_str(), val);
     }
 
@@ -101,7 +101,7 @@ public:
     // 📍 Локация в коде (Перегрузки для дебага и стектрейсов)
     // =========================================================================
 
-    void update_location(const std::string& file, int line) {
+    void update_location(const ::std::string& file, int line) {
         current_file_ = file;
         current_line_ = line;
     }
@@ -116,7 +116,7 @@ public:
         current_line_ = line;
     }
 
-    std::string current_file() const { return current_file_; }
+    ::std::string current_file() const { return current_file_; }
     int current_line() const { return current_line_; }
 
     // --- Управление GC ---
@@ -160,7 +160,7 @@ public:
 template <typename ParentT>
 inline void write_barrier(ParentT* parent, ely_value* slot, ely_value new_val) {
     if (::is_gc_managed(parent) && ELY_IS_PTR(new_val)) {
-        void* unboxed = ELY_UNBOX_PTR(new_val);[cite: 4]
+        void* unboxed = ELY_UNBOX_PTR(new_val);
         void* dummy = unboxed;
         ::gc_write_barrier(parent, &dummy, unboxed);
     }

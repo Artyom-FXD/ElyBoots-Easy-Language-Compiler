@@ -14,22 +14,37 @@ inline bool Bool(any val)      { return val.as_bool(); }
 inline str Str(any val)        { return val.as_str(); }
 
 // --- Universal static caster ---
+// ELYSQUARE_ely_utils.hpp
+
+// --- Universal static caster ---
 template <typename T>
 inline T As(any val) {
-    if constexpr (std::is_same_v<T, str>) {
+    if constexpr (::std::is_same_v<T, str>) {
         return val.as_str();
+    } else if constexpr (::std::is_same_v<T, bool>) {
+        return val.as_bool();
+    } else if constexpr (::std::is_integral_v<T>) {
+        return static_cast<T>(val.as_int());
+    } else if constexpr (::std::is_same_v<T, double>) {
+        return val.as_double();
+    } else if constexpr (::std::is_same_v<T, float>) {
+        return val.as_float();
+    } else if constexpr (::std::is_same_v<T, array>) {
+        return val.as_array();
+    } else if constexpr (::std::is_same_v<T, dict>) {
+        return val.as_dict();
     } else {
-        return val.as<T>();
+        static_assert(!sizeof(T*), "Unsupported type passed to ely::As<T>()");
     }
 }
 
 template <typename T>
-std::vector<T> ToVector(const ely::array& arr) {
+::std::vector<T> ToVector(const ely::array& arr) {
     return arr.to_static_vector<T>();
 }
 
 template <typename K, typename V>
-std::unordered_map<K, V> ToMap(const ely::dict& dict) {
+::std::unordered_map<K, V> ToMap(const ely::dict& dict) {
     return dict.to_static_map<K, V>();
 }
 
